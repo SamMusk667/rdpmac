@@ -102,6 +102,11 @@ impl VirtualScreen {
         state.display.as_ref().map(VirtualDisplay::id)
     }
 
+    /// The id of the virtual display while it exists.
+    pub fn current_id(&self) -> Option<u32> {
+        lock(&self.state).display.as_ref().map(VirtualDisplay::id)
+    }
+
     /// Counts an update stream as using the display until the returned guard drops.
     pub fn stream(self: &Arc<Self>) -> StreamGuard {
         lock(&self.state).streams += 1;

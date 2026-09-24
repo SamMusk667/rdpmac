@@ -2,8 +2,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AuthMode {
     /// Local and directory accounts through PAM.
     Pam,
@@ -11,7 +13,8 @@ pub enum AuthMode {
     Static,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Resolution {
     /// The size the client asks for (mstsc /w /h, full screen, window resizing); the display is
     /// scaled to it when the two differ.
@@ -20,7 +23,8 @@ pub enum Resolution {
     Native,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum VirtualDisplay {
     /// On a Mac without a screen attached, a session following the client gets its own display
     /// at the client's size instead of a scaled picture.
@@ -29,7 +33,8 @@ pub enum VirtualDisplay {
     Off,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Codec {
     /// H.264 through the graphics pipeline when the client supports it, RemoteFX otherwise.
     Auto,
@@ -98,6 +103,11 @@ pub struct Args {
     /// Directory for generated state; defaults to ~/Library/Application Support/rdpmac.
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
+
+    /// Settings file; flags given on the command line override it. Defaults to config.toml in
+    /// the data directory.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Serve a synthetic moving picture of this size (for example 1920x1080) instead of the
     /// screen. Needs no permission; used to test clients and measure encoding cost.

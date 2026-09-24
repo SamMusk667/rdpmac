@@ -1,13 +1,16 @@
 //! rdpmacd: RDP server for the macOS console session, built on IronRDP and libscreenio.
 
 mod config;
+mod control;
+mod settings;
+mod status;
 mod tls;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use ironrdp_server::{CredentialValidator, RdpServer, TlsIdentityCtx};
 use rdpmac_auth::{Lockout, StaticValidator};
 use rdpmac_session::display::{DisplayHandler, FrameSource, ResolutionMode};
@@ -17,20 +20,55 @@ use rdpmac_session::Geometry;
 use tracing::{info, warn};
 
 use crate::config::{Args, AuthMode, Codec, Resolution, VirtualDisplay};
+use crate::settings::Settings;
+
+/// Where the daemon keeps its own log files: `RDPMAC_LOG_DIR`, with a leading `~/` meaning the
+/// home directory, since a launchd job inside the app bundle cannot spell out the home path.
+fn log_dir() -> Option<PathBuf> {
+    let dir = std::env::var("RDPMAC_LOG_DIR").ok().filter(|d| !d.is_empty())?;
+    match dir.strip_prefix("~/") {
+        Some(rest) => directories::BaseDirs::new().map(|base| base.home_dir().join(rest)),
+        None => Some(PathBuf::from(dir)),
+    }
+}
 
 fn init_logging() -> anyhow::Result<()> {
     use std::io::IsTerminal;
+    use tracing_appender::rolling::{Builder, Rotation};
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::builder()
         .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
         .with_env_var("RDPMAC_LOG")
         .from_env_lossy();
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().compact().with_ansi(std::io::stdout().is_terminal()))
-        .with(filter)
-        .try_init()
-        .context("logging setup")
+    let registry = tracing_subscriber::registry().with(filter);
+    match log_dir() {
+        // Under launchd nothing reads stdout; keep two weeks of daily files instead.
+        Some(dir) => {
+            // The appender prunes old files before it creates the directory.
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            let files = Builder::new()
+                .rotation(Rotation::DAILY)
+                .filename_prefix("rdpmacd")
+                .filename_suffix("log")
+                .max_log_files(14)
+                .build(&dir)
+                .with_context(|| format!("log files in {}", dir.display()))?;
+            registry
+                .with(tracing_subscriber::fmt::layer().compact().with_ansi(false).with_writer(files))
+                .try_init()
+        }
+        None => registry
+            .with(tracing_subscriber::fmt::layer().compact().with_ansi(std::io::stdout().is_terminal()))
+            .try_init(),
+    }
+    .context("logging setup")?;
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        tracing::error!(%panic, "rdpmacd panicked");
+        default_hook(panic);
+    }));
+    Ok(())
 }
 
 fn data_dir(args: &Args) -> anyhow::Result<PathBuf> {
@@ -98,7 +136,8 @@ fn warn_missing_permissions(info: &screenio_core::SessionInfo) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     init_logging()?;
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     if args.request_permissions {
         let info = screenio_core::request_permissions();
@@ -107,6 +146,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let dir = data_dir(&args)?;
+    let config_path = args.config.clone().unwrap_or_else(|| dir.join("config.toml"));
+    Settings::load(&config_path)?.apply(&mut args, &matches);
     let cert = args.cert.clone().unwrap_or_else(|| dir.join("cert.pem"));
     let key = args.key.clone().unwrap_or_else(|| dir.join("key.pem"));
     tls::ensure_identity(&cert, &key)?;
@@ -163,10 +204,11 @@ async fn main() -> anyhow::Result<()> {
         && mode == ResolutionMode::FollowClient
         && args.test_pattern.is_none()
         && args.display.is_none();
-    let display_handler = match own_display.then(rdpmac_session::virtual_screen::VirtualScreen::new).flatten() {
+    let virtual_screen = own_display.then(rdpmac_session::virtual_screen::VirtualScreen::new).flatten();
+    let display_handler = match &virtual_screen {
         Some(screen) => {
             info!("sessions get a display of their own when no screen is attached");
-            display_handler.with_virtual_screen(screen)
+            display_handler.with_virtual_screen(screen.clone())
         }
         None => display_handler,
     };
@@ -176,8 +218,10 @@ async fn main() -> anyhow::Result<()> {
         None => display_handler,
     };
     info!(codec = ?args.codec, "session codec");
+    let status_geometry = geometry.clone();
     let input_handler = InputHandler::spawn(geometry);
-    let validator = validator(&args)?;
+    let tracker = Arc::new(status::Tracker::default());
+    let validator: Arc<dyn CredentialValidator> = Arc::new(status::Recorded::new(validator(&args)?, tracker.clone()));
 
     let mut server = RdpServer::builder()
         .with_addr(args.listen)
@@ -185,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
         .with_input_handler(input_handler)
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
+        .with_connection_handler(Some(Box::new(status::Connections(tracker.clone()))))
         // Adopt the size the client asks for in its connection request instead of the display's;
         // DisplayHandler::request_initial_size then serves exactly that size.
         .with_honor_client_desktop_size(mode == ResolutionMode::FollowClient)
@@ -196,6 +241,26 @@ async fn main() -> anyhow::Result<()> {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
         }))
         .build();
+    let log_dir = log_dir()
+        .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join("Library/Logs/rdpmac")))
+        .unwrap_or_else(|| dir.clone());
+    let control = Arc::new(control::Control {
+        tracker,
+        geometry: status_geometry,
+        virtual_screen,
+        effective: Settings::effective(&args),
+        config_path,
+        data_dir: dir,
+        log_dir,
+        cert,
+        key,
+        started: status::now(),
+    });
+    tokio::spawn(async move {
+        if let Err(e) = control::serve(control).await {
+            warn!("control socket unavailable: {e:#}");
+        }
+    });
     info!(listen = %args.listen, "rdpmacd listening");
     server.run().await.context("server stopped with an error")
 }

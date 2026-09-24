@@ -22,7 +22,9 @@ domain="gui/$(id -u)"
 support="$HOME/Library/Application Support/rdpmac"
 bin="$support/bin/rdpmacd"
 plist="$HOME/Library/LaunchAgents/$label.plist"
-log="$HOME/Library/Logs/rdpmac/rdpmacd.log"
+logs_dir="$HOME/Library/Logs/rdpmac"
+# rdpmacd writes daily files there itself; launchd.log only catches what it prints before that.
+launchd_log="$logs_dir/launchd.log"
 tab=$(printf '\t')
 
 die() {
@@ -75,12 +77,17 @@ write_job() {
     done
     plutil -insert EnvironmentVariables -dictionary "$out"
     plutil -insert EnvironmentVariables.RDPMAC_LOG -string info "$out"
+    plutil -insert EnvironmentVariables.RDPMAC_LOG_DIR -string "$logs_dir" "$out"
     plutil -insert RunAtLoad -bool YES "$out"
     plutil -insert ProcessType -string Interactive "$out"
     # Capture and input injection only work in the session at the Mac's screen.
     plutil -insert LimitLoadToSessionType -string Aqua "$out"
-    plutil -insert StandardOutPath -string "$log" "$out"
-    plutil -insert StandardErrorPath -string "$log" "$out"
+    plutil -insert StandardOutPath -string "$launchd_log" "$out"
+    plutil -insert StandardErrorPath -string "$launchd_log" "$out"
+}
+
+newest_log() {
+    ls -t "$logs_dir"/rdpmacd.*.log 2>/dev/null | head -n 1
 }
 
 # The installed agent's daemon arguments, one per line.
@@ -92,10 +99,6 @@ agent_args() {
         plutil -extract "ProgramArguments.$i" raw -o - "$plist"
         i=$((i + 1))
     done
-}
-
-log_size() {
-    if [ -f "$log" ]; then wc -c <"$log" | tr -d ' '; else echo 0; fi
 }
 
 install_agent() {
@@ -114,7 +117,7 @@ EOF
         shift
     fi
 
-    mkdir -p "$(dirname "$bin")" "$(dirname "$plist")" "$(dirname "$log")"
+    mkdir -p "$(dirname "$bin")" "$(dirname "$plist")" "$logs_dir"
     unload "$label"
     # Sign a copy so that a failed signature leaves the installed binary as it was.
     cp "$src" "$bin.new"
@@ -130,12 +133,11 @@ EOF
     plutil -insert KeepAlive.SuccessfulExit -bool NO "$plist"
     plutil -insert ThrottleInterval -integer 10 "$plist"
 
-    offset=$(log_size)
     load "$plist"
     echo "installed $bin"
     sleep 2
     status_agent
-    if tail -c "+$((offset + 1))" "$log" 2>/dev/null | grep -q 'permission is missing'; then
+    if tail -n 15 "$(newest_log)" 2>/dev/null | grep -q 'permission is missing'; then
         echo
         echo "rdpmacd lacks a permission; next: sh scripts/agent.sh permissions"
     fi
@@ -156,7 +158,7 @@ permissions() {
     done
     unload "$job"
     rm -f "$job_plist"
-    grep 'permission prompts shown' "$log" | tail -n 1
+    grep -h 'permission prompts shown' "$(newest_log)" 2>/dev/null | tail -n 1
     cat <<EOF
 
 macOS has asked for Screen Recording and Accessibility on behalf of rdpmacd. In System Settings >
@@ -206,14 +208,16 @@ status_agent() {
     if [ -f "$bin" ]; then
         codesign -d -r- "$bin" 2>&1 | sed -n 's/^\(# \)\{0,1\}designated => /signature: /p'
     fi
-    if [ -f "$log" ]; then
+    log=$(newest_log)
+    if [ -n "$log" ]; then
         echo "log $log:"
         tail -n 5 "$log"
     fi
 }
 
 logs() {
-    [ -f "$log" ] || die "no log yet at $log"
+    log=$(newest_log)
+    [ -n "$log" ] || die "no log yet in $logs_dir"
     if [ "${1:-}" = "-f" ]; then
         tail -n 50 -F "$log"
     else
@@ -225,7 +229,7 @@ uninstall_agent() {
     unload "$label"
     rm -f "$plist" "$bin" "$bin.new"
     rmdir "$(dirname "$bin")" 2>/dev/null || true
-    echo "removed the agent; kept the logs in $(dirname "$log") and the TLS certificate in $support"
+    echo "removed the agent; kept the logs in $logs_dir and the TLS certificate in $support"
     echo "rdpmacd's entries under Privacy & Security stay until you remove them there"
 }
 
