@@ -7,7 +7,7 @@
 | 服务端仓库骨架 | 完成 | 四个 crate，AGPL-3.0 加商业双许可 |
 | IronRDP 接 libscreenio 显示与输入 | 完成 | 采集与光标线程喂有界通道；注入线程；像素与点换算 |
 | TLS 自签名 | 完成 | rcgen 生成 ECDSA P-256，PEM 存于数据目录 |
-| 密码校验 | 完成 | PAM 服务 `checkpw`，直接走 OpenPAM；未知账号被拒绝的用例通过 |
+| 密码校验 | 完成，真实账号待验证 | PAM 服务 `checkpw`，直接走 OpenPAM。2026-09-24 修复：`checkpw` 带 `use_first_pass`，密码须在认证前存入 PAM，此前任何账号都会失败；回归测试确认密码送达 OpenDirectory |
 | RemoteFX | 完成 | 由 IronRDP 编码，服务端对连续整帧做差分，只编码变化的 tile |
 | 光标形状与位置 | 完成 | 按形状 id 轮询，2x 位图，96 像素以内 |
 | 锁定键同步 | 完成 | libscreenio `sync_locks`，Caps Lock 通过 IOKit 读写 |

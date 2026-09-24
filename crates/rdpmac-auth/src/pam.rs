@@ -26,6 +26,8 @@ const PAM_ACCT_EXPIRED: c_int = 17;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
 const PAM_PROMPT_ECHO_ON: c_int = 2;
 
+const PAM_AUTHTOK: c_int = 6;
+
 #[repr(C)]
 struct PamMessage {
     msg_style: c_int,
@@ -51,6 +53,7 @@ type PamHandle = c_void;
 #[link(name = "pam")]
 extern "C" {
     fn pam_start(service: *const c_char, user: *const c_char, conv: *const PamConv, handle: *mut *mut PamHandle) -> c_int;
+    fn pam_set_item(handle: *mut PamHandle, item_type: c_int, item: *const c_void) -> c_int;
     fn pam_authenticate(handle: *mut PamHandle, flags: c_int) -> c_int;
     fn pam_acct_mgmt(handle: *mut PamHandle, flags: c_int) -> c_int;
     fn pam_end(handle: *mut PamHandle, status: c_int) -> c_int;
@@ -140,6 +143,14 @@ fn authenticate(service: &str, user: &str, password: &str) -> Result<Outcome, Pa
     if started != PAM_SUCCESS || handle.is_null() {
         return Err(PamBackendError(format!("pam_start failed: {}", describe(ptr::null_mut(), started))));
     }
+    // checkpw passes use_first_pass: pam_opendirectory reads PAM_AUTHTOK and never asks through
+    // the conversation, which only serves services that prompt.
+    let stored = unsafe { pam_set_item(handle, PAM_AUTHTOK, password_c.as_ptr() as *const c_void) };
+    if stored != PAM_SUCCESS {
+        let reason = describe(handle, stored);
+        unsafe { pam_end(handle, stored) };
+        return Err(PamBackendError(format!("pam_set_item failed: {reason}")));
+    }
     let mut code = unsafe { pam_authenticate(handle, 0) };
     if code == PAM_SUCCESS {
         code = unsafe { pam_acct_mgmt(handle, 0) };
@@ -214,5 +225,16 @@ mod tests {
         };
         let decision = validator.validate(&creds).await.expect("pam backend reachable");
         assert_eq!(decision, CredentialDecision::Reject);
+    }
+
+    /// Without the password reaching pam_opendirectory, every account fails with PAM_AUTH_ERR
+    /// before OpenDirectory is asked; with it, an account that does not exist is unknown.
+    #[test]
+    fn checkpw_receives_the_password() {
+        let outcome = authenticate("checkpw", "rdpmac-no-such-user-8f3a", "irrelevant").expect("pam backend reachable");
+        match outcome {
+            Outcome::Rejected(reason) => assert_eq!(reason, describe(ptr::null_mut(), PAM_USER_UNKNOWN)),
+            Outcome::Accepted => panic!("a nonexistent account was accepted"),
+        }
     }
 }
