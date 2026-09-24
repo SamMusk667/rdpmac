@@ -10,8 +10,28 @@ pub fn pixel_size(display: &CGDisplay) -> (u32, u32) {
     }
 }
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+}
+
+/// Displays that are connected but asleep are not "active"; list them anyway so a server can
+/// keep addressing a display whose panel has been powered down.
+fn online_displays() -> Result<Vec<u32>> {
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    let status = unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    if status != 0 {
+        return Err(Error::Os);
+    }
+    Ok(ids[..count as usize].to_vec())
+}
+
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
-    let ids = CGDisplay::active_displays().map_err(|_| Error::Os)?;
+    let mut ids = CGDisplay::active_displays().map_err(|_| Error::Os)?;
+    if ids.is_empty() {
+        ids = online_displays()?;
+    }
     Ok(ids
         .into_iter()
         .map(|id| {

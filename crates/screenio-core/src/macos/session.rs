@@ -1,3 +1,5 @@
+use std::ffi::c_void;
+
 use crate::SessionInfo;
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -24,6 +26,44 @@ pub fn session_info() -> SessionInfo {
 pub fn request_permissions() -> SessionInfo {
     unsafe {
         CGRequestScreenCaptureAccess();
+        prompt_accessibility();
     }
     session_info()
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    static kAXTrustedCheckOptionPrompt: *const c_void;
+    static kCFBooleanTrue: *const c_void;
+    static kCFTypeDictionaryKeyCallBacks: c_void;
+    static kCFTypeDictionaryValueCallBacks: c_void;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    fn CFDictionaryCreate(
+        allocator: *const c_void,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        count: isize,
+        key_callbacks: *const c_void,
+        value_callbacks: *const c_void,
+    ) -> *const c_void;
+    fn CFRelease(cf: *const c_void);
+}
+
+/// Shows the Accessibility prompt if this process is not trusted yet.
+unsafe fn prompt_accessibility() {
+    let keys = [kAXTrustedCheckOptionPrompt];
+    let values = [kCFBooleanTrue];
+    let options = CFDictionaryCreate(
+        std::ptr::null(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks,
+    );
+    if options.is_null() {
+        return;
+    }
+    AXIsProcessTrustedWithOptions(options);
+    CFRelease(options);
 }

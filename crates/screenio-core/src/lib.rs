@@ -160,6 +160,14 @@ pub mod key_flags {
     pub const RELEASE: u32 = 4;
 }
 
+/// Flags for [`Input::sync_locks`], matching RDP's `TS_SYNC_EVENT` toggle flags.
+pub mod lock_flags {
+    pub const SCROLL: u32 = 1;
+    pub const NUM: u32 = 2;
+    pub const CAPS: u32 = 4;
+    pub const KANA: u32 = 8;
+}
+
 pub struct Input(platform::Input);
 
 impl Input {
@@ -193,6 +201,12 @@ impl Input {
     /// Types one Unicode code point, independent of keyboard layout.
     pub fn key_unicode(&mut self, codepoint: u32, down: bool) -> Result<()> {
         self.0.key_unicode(codepoint, down)
+    }
+
+    /// Makes the local lock keys match the client's state, given as [`lock_flags`].
+    /// Platforms without a lock key (macOS has no Num Lock or Scroll Lock) ignore those bits.
+    pub fn sync_locks(&mut self, flags: u32) -> Result<()> {
+        self.0.sync_locks(flags)
     }
 
     /// Releases every key and button this handle still holds down; call on disconnect.

@@ -45,6 +45,8 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   返回 `SIO_E_RESET`，此时应关闭并重新打开。
 * 键盘输入用 PC/AT set-1 扫描码加 E0/E1/释放标志，也就是 RDP 报文里的原样；另有 Unicode 事件。
   修饰键状态由库自己维护并附在每个事件上。
+* 锁定键：`sync_locks` 按 RDP 的 TS_SYNC_EVENT 位同步；macOS 只有 Caps Lock，通过 IOKit 的 HID 系统读写状态。
+* 显示器列表包含已连接但休眠的显示器，面板关掉时服务仍能寻址它。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。
 * 所有函数同步返回，`0` 成功，负数为 `SIO_E_*`。
 

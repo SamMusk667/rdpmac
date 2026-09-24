@@ -72,6 +72,10 @@ impl Input {
         Err(Error::Unsupported)
     }
 
+    pub fn sync_locks(&mut self, _flags: u32) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+
     pub fn release_all(&mut self) -> Result<()> {
         Err(Error::Unsupported)
     }

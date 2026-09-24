@@ -5,7 +5,7 @@
 //! keyboard would.
 
 use super::keymap;
-use crate::{key_flags, Error, MouseButton, Result};
+use crate::{key_flags, lock_flags, Error, MouseButton, Result};
 use core_graphics::{
     event::{
         CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton,
@@ -243,6 +243,18 @@ impl Input {
         Ok(())
     }
 
+    /// Caps Lock is the only lock key macOS has; its state lives in the HID system, not in the
+    /// event stream, so it is read and written through IOKit rather than by pressing the key.
+    pub fn sync_locks(&mut self, flags: u32) -> Result<()> {
+        let wanted = flags & lock_flags::CAPS != 0;
+        let current = hid::caps_lock()?;
+        if current != wanted {
+            hid::set_caps_lock(wanted)?;
+        }
+        self.flags.set(CGEventFlags::CGEventFlagAlphaShift, wanted);
+        Ok(())
+    }
+
     pub fn release_all(&mut self) -> Result<()> {
         for key in std::mem::take(&mut self.keys_down) {
             self.post_key(key, false)?;
@@ -251,6 +263,74 @@ impl Input {
             self.mouse_button(button, false)?;
         }
         self.flags = CGEventFlags::CGEventFlagNull;
+        Ok(())
+    }
+}
+
+mod hid {
+    use std::ffi::{c_char, c_int, c_void};
+
+    use crate::{Error, Result};
+
+    type IoObject = u32;
+    type KernReturn = c_int;
+    const KIOHID_PARAM_CONNECT_TYPE: u32 = 1;
+    const KIOHID_CAPS_LOCK_STATE: u32 = 1;
+
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        static mach_task_self_: u32;
+        fn IOServiceMatching(name: *const c_char) -> *mut c_void;
+        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> IoObject;
+        fn IOServiceOpen(service: IoObject, owning_task: u32, connect_type: u32, connect: *mut IoObject) -> KernReturn;
+        fn IOServiceClose(connect: IoObject) -> KernReturn;
+        fn IOObjectRelease(object: IoObject) -> KernReturn;
+        fn IOHIDGetModifierLockState(handle: IoObject, selector: u32, state: *mut bool) -> KernReturn;
+        fn IOHIDSetModifierLockState(handle: IoObject, selector: u32, state: bool) -> KernReturn;
+    }
+
+    struct Connection(IoObject);
+
+    impl Connection {
+        fn open() -> Result<Self> {
+            unsafe {
+                let service = IOServiceGetMatchingService(0, IOServiceMatching(c"IOHIDSystem".as_ptr()));
+                if service == 0 {
+                    return Err(Error::Os);
+                }
+                let mut connect = 0;
+                let status = IOServiceOpen(service, mach_task_self_, KIOHID_PARAM_CONNECT_TYPE, &mut connect);
+                IOObjectRelease(service);
+                if status != 0 || connect == 0 {
+                    return Err(Error::Os);
+                }
+                Ok(Self(connect))
+            }
+        }
+    }
+
+    impl Drop for Connection {
+        fn drop(&mut self) {
+            unsafe { IOServiceClose(self.0) };
+        }
+    }
+
+    pub fn caps_lock() -> Result<bool> {
+        let conn = Connection::open()?;
+        let mut state = false;
+        let status = unsafe { IOHIDGetModifierLockState(conn.0, KIOHID_CAPS_LOCK_STATE, &mut state) };
+        if status != 0 {
+            return Err(Error::Os);
+        }
+        Ok(state)
+    }
+
+    pub fn set_caps_lock(on: bool) -> Result<()> {
+        let conn = Connection::open()?;
+        let status = unsafe { IOHIDSetModifierLockState(conn.0, KIOHID_CAPS_LOCK_STATE, on) };
+        if status != 0 {
+            return Err(Error::Os);
+        }
         Ok(())
     }
 }

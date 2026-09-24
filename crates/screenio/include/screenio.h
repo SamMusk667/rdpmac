@@ -25,6 +25,11 @@ extern "C" {
 #define SIO_KEY_EXTENDED1 2u  /* E1-prefixed scancode */
 #define SIO_KEY_RELEASE   4u  /* key release; absent means press */
 
+#define SIO_LOCK_SCROLL   1u  /* lock key flags for sio_input_sync_locks, as in TS_SYNC_EVENT */
+#define SIO_LOCK_NUM      2u
+#define SIO_LOCK_CAPS     4u
+#define SIO_LOCK_KANA     8u
+
 #define SIO_BUTTON_LEFT   0u
 #define SIO_BUTTON_RIGHT  1u
 #define SIO_BUTTON_MIDDLE 2u
@@ -84,6 +89,7 @@ int  sio_input_mouse_button(sio_input_t *in, uint32_t button, uint8_t down);
 int  sio_input_mouse_wheel(sio_input_t *in, int32_t dx, int32_t dy);   /* 120 per notch, + is up/right */
 int  sio_input_key_scancode(sio_input_t *in, uint16_t set1_code, uint32_t flags);
 int  sio_input_key_unicode(sio_input_t *in, uint32_t codepoint, uint8_t down);
+int  sio_input_sync_locks(sio_input_t *in, uint32_t lock_flags);
 int  sio_input_release_all(sio_input_t *in);
 void sio_input_close(sio_input_t *in);
 

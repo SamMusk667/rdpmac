@@ -310,6 +310,12 @@ pub unsafe extern "C" fn sio_input_key_unicode(input: *mut sio_input_t, codepoin
     with_input(input, |i| i.key_unicode(codepoint, down != 0))
 }
 
+/// `flags`: SIO_LOCK_* bits describing the client's lock key state.
+#[no_mangle]
+pub unsafe extern "C" fn sio_input_sync_locks(input: *mut sio_input_t, flags: u32) -> i32 {
+    with_input(input, |i| i.sync_locks(flags))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn sio_input_release_all(input: *mut sio_input_t) -> i32 {
     with_input(input, |i| i.release_all())
