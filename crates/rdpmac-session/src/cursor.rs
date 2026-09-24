@@ -51,9 +51,18 @@ impl PointerCache {
             height,
             hot_x: shape.hot_x.clamp(0, i32::from(width) - 1) as u16,
             hot_y: shape.hot_y.clamp(0, i32::from(height) - 1) as u16,
-            data: shape.rgba.clone(),
+            data: bottom_up_bgra(&shape.rgba, shape.width as usize),
         }))
     }
+}
+
+/// IronRDP sends the data as the pointer's 32-bit XOR mask, which RDP defines like a Windows
+/// DIB: BGRA, rows from the bottom up. Top-down RGBA shows the cursor upside down.
+fn bottom_up_bgra(rgba: &[u8], width: usize) -> Vec<u8> {
+    rgba.chunks_exact(width * 4)
+        .rev()
+        .flat_map(|row| row.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], p[3]]))
+        .collect()
 }
 
 pub fn position_update(x: u16, y: u16) -> DisplayUpdate {
@@ -144,7 +153,20 @@ mod tests {
         let mut cache = PointerCache::default();
         let p = pointer(cache.update_for(&solid(56, 80, [10, 20, 30, 255], 2.0), 0.5).unwrap());
         assert_eq!((p.width, p.height), (14, 20));
-        assert_eq!(&p.data[..4], &[10, 20, 30, 255]);
+        assert_eq!(&p.data[..4], &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn sent_as_bottom_up_bgra_with_the_hotspot_from_the_top() {
+        // A 1x2 arrow tip: red on the top row, transparent below it.
+        let mut shape = solid(1, 2, [0, 0, 0, 0], 1.0);
+        shape.rgba[..4].copy_from_slice(&[255, 0, 0, 255]);
+        shape.hot_x = 0;
+        shape.hot_y = 0;
+        let mut cache = PointerCache::default();
+        let p = pointer(cache.update_for(&shape, 1.0).unwrap());
+        assert_eq!(p.data, [0, 0, 0, 0, 0, 0, 255, 255], "bottom row first, blue byte first");
+        assert_eq!((p.hot_x, p.hot_y), (0, 0));
     }
 
     #[test]
