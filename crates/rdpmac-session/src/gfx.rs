@@ -13,7 +13,7 @@ use ironrdp_egfx::pdu::{Avc420Region, CapabilitiesAdvertisePdu, CapabilitySet};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_server::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle, ServerEvent, ServerEventSender};
 use ironrdp_svc::ChannelFlags;
-use rdpmac_encode::h264::H264Encoder;
+use rdpmac_encode::h264::{EncodedFrame, H264Encoder};
 use rdpmac_encode::rate::RateControl;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -118,6 +118,9 @@ pub struct GfxStream {
     announced: bool,
     too_large_reported: bool,
     started: Instant,
+    /// Whether the encoder holds the newest picture, sent or waiting to be, so that refining it
+    /// cannot put back something older than what the client shows.
+    refinable: bool,
 }
 
 impl GfxStream {
@@ -132,11 +135,13 @@ impl GfxStream {
             announced: false,
             too_large_reported: false,
             started: Instant::now(),
+            refinable: false,
         }
     }
 
     /// Offers one BGRA frame of `width` x `height`, the session size.
     pub fn send(&mut self, bgra: &[u8], width: u32, height: u32, stride: usize) -> GfxOutcome {
+        self.refinable = false;
         if self.disabled {
             return GfxOutcome::Unavailable;
         }
@@ -161,6 +166,7 @@ impl GfxStream {
             if server.should_backpressure() {
                 drop(server);
                 self.adapt(true);
+                self.stage(bgra, width, height, stride);
                 return GfxOutcome::Skipped;
             }
         }
@@ -168,6 +174,8 @@ impl GfxStream {
         if self.encoder.as_ref().map(H264Encoder::size) != Some((width, height)) {
             match H264Encoder::new(width, height, self.fps) {
                 Ok(encoder) => {
+                    let quantiser = encoder.controls_quantiser();
+                    info!(width, height, quantiser, "H.264 encoder ready");
                     self.rate = Some(RateControl::new(encoder.target_bitrate(), Instant::now()));
                     self.encoder = Some(encoder);
                 }
@@ -209,21 +217,81 @@ impl GfxStream {
             }
             info!(surface = id, width, height, "graphics surface created");
         }
-        let Some(surface) = self.surface.as_ref().map(|s| s.id) else {
-            return GfxOutcome::Unavailable;
-        };
         let Some(encoder) = self.encoder.as_mut() else {
             return GfxOutcome::Unavailable;
         };
         let encoded = match encoder.encode(bgra, stride) {
             Ok(Some(frame)) => frame,
-            Ok(None) => return GfxOutcome::Skipped,
+            Ok(None) => {
+                // Dropped or held back by the encoder, which keeps it for `refine`.
+                self.refinable = true;
+                return GfxOutcome::Skipped;
+            }
             Err(e) => {
                 warn!(%e, "H.264 encoding failed; recreating the encoder on the next frame");
                 self.encoder = None;
                 return GfxOutcome::Unavailable;
             }
         };
+        self.refinable = true;
+        self.deliver(&handle, encoded)
+    }
+
+    /// Called when capture waited a frame interval without a new frame: sends the picture the
+    /// client is missing, or a sharper encoding of the one it has. `Some(bytes)` when a frame
+    /// went out.
+    pub fn refine(&mut self) -> Option<usize> {
+        if !self.refinable {
+            return None;
+        }
+        let handle = lock(&self.link.handle).clone()?;
+        let server_id = Arc::as_ptr(&handle) as usize;
+        if self.surface.as_ref().is_none_or(|s| s.server != server_id) {
+            return None;
+        }
+        {
+            let server = lock(&handle);
+            if !server.is_ready() || server.should_backpressure() {
+                return None;
+            }
+        }
+        let encoded = match self.encoder.as_mut()?.refine() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return None,
+            Err(e) => {
+                warn!(%e, "H.264 refinement failed; recreating the encoder on the next frame");
+                self.encoder = None;
+                self.refinable = false;
+                return None;
+            }
+        };
+        let qp = encoded.qp;
+        match self.deliver(&handle, encoded) {
+            GfxOutcome::Sent(bytes) => {
+                debug!(bytes, ?qp, "sent a frame while the screen was still");
+                Some(bytes)
+            }
+            GfxOutcome::Skipped | GfxOutcome::Unavailable => None,
+        }
+    }
+
+    /// Keeps a frame the client is too far behind to take, for `refine` to send later.
+    fn stage(&mut self, bgra: &[u8], width: u32, height: u32, stride: usize) {
+        let Some(encoder) = self.encoder.as_mut().filter(|e| e.size() == (width, height)) else {
+            return;
+        };
+        match encoder.stage(bgra, stride) {
+            Ok(()) => self.refinable = true,
+            Err(e) => debug!(%e, "keeping a skipped frame failed"),
+        }
+    }
+
+    /// Submits an encoded frame on the current surface.
+    fn deliver(&mut self, handle: &GfxServerHandle, encoded: EncodedFrame) -> GfxOutcome {
+        let Some(surface) = self.surface.as_ref() else {
+            return GfxOutcome::Unavailable;
+        };
+        let (id, width, height) = (surface.id, surface.width, surface.height);
         if !self.announced {
             info!(width, height, "sending H.264 through the graphics pipeline");
             self.announced = true;
@@ -231,14 +299,14 @@ impl GfxStream {
         let region = Avc420Region {
             left: 0,
             top: 0,
-            right: w16 - 1,
-            bottom: h16 - 1,
+            right: (width - 1) as u16,
+            bottom: (height - 1) as u16,
             quantization_parameter: REGION_QP,
             quality: REGION_QUALITY,
         };
         let timestamp = self.started.elapsed().as_millis() as u32;
-        let mut server = lock(&handle);
-        if server.send_avc420_frame(surface, &encoded.data, &[region], timestamp).is_none() {
+        let mut server = lock(handle);
+        if server.send_avc420_frame(id, &encoded.data, &[region], timestamp).is_none() {
             // The client never sees this frame, so the next one must not depend on it.
             if let Some(encoder) = self.encoder.as_mut() {
                 encoder.request_key_frame();

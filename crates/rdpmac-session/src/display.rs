@@ -395,6 +395,16 @@ impl Route {
         let _ = (bgra, width, height, stride);
         None
     }
+
+    /// The screen did not change for a frame interval: lets the pipeline catch up or sharpen.
+    fn idle(&mut self, stats: &mut Stats) {
+        #[cfg(target_os = "macos")]
+        if let Some(bytes) = self.stream.as_mut().and_then(crate::gfx::GfxStream::refine) {
+            stats.record(Delivery::H264(bytes));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = stats;
+    }
 }
 
 impl Producer {
@@ -521,7 +531,7 @@ impl Producer {
                             }
                         }
                     }
-                    Err(CaptureError::Timeout) => {}
+                    Err(CaptureError::Timeout) => route.idle(&mut stats),
                     Err(CaptureError::Reset) => {
                         info!("capture stream stopped, reopening");
                         break;

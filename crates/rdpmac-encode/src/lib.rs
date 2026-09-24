@@ -5,8 +5,14 @@
 //! VideoToolbox H.264 path that feeds the graphics pipeline instead of this module.
 
 #[cfg(target_os = "macos")]
+pub mod color;
+#[cfg(target_os = "macos")]
 pub mod h264;
+#[cfg(target_os = "macos")]
+mod quantiser;
 pub mod rate;
+#[cfg(target_os = "macos")]
+mod sps;
 
 use core::num::{NonZeroU16, NonZeroUsize};
 

@@ -5,11 +5,16 @@
 //! start or recover at any key frame. Encoding is synchronous: each call flushes the session, so
 //! a frame's bitstream is ready when [`H264Encoder::encode`] returns. The session is configured
 //! for real-time use without frame reordering, which RDP requires.
+//!
+//! Where the hardware supports it, the session runs in VideoToolbox's low-latency mode and takes
+//! a quantiser with every frame from [`QpControl`]; elsewhere VideoToolbox's own rate control
+//! runs. Either way [`H264Encoder::refine`] sharpens a picture that has stopped changing.
 
 use std::ffi::{c_int, c_void};
 use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
@@ -18,26 +23,40 @@ use objc2_core_media::{
 };
 use objc2_core_video::{
     kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferPixelFormatTypeKey,
-    kCVPixelBufferWidthKey, kCVPixelFormatType_32BGRA, CVPixelBuffer, CVPixelBufferGetBaseAddress,
-    CVPixelBufferGetBytesPerRow, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferPool,
-    CVPixelBufferUnlockBaseAddress,
+    kCVPixelBufferWidthKey, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, CVPixelBuffer,
+    CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
 };
 use objc2_video_toolbox::{
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
     kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
+    kVTCompressionPropertyKey_ReferenceBufferCount, kVTCompressionPropertyKey_SupportsBaseFrameQP, kVTEncodeFrameOptionKey_BaseFrameQP,
     kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_Main_AutoLevel,
-    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder, VTCompressionSession, VTEncodeInfoFlags,
-    VTSessionSetProperty,
+    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
+    kVTVideoEncoderSpecification_EnableLowLatencyRateControl, VTCompressionSession, VTEncodeInfoFlags,
+    VTSessionCopyProperty, VTSessionSetProperty,
 };
 
+use crate::color::{Converter, Nv12Planes};
+use crate::quantiser::QpControl;
+
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
-/// Target bits per pixel per frame; screen content compresses well, so this is modest.
-const BITS_PER_PIXEL: f64 = 0.1;
+/// Target bits per pixel per frame while the picture moves.
+const BITS_PER_PIXEL: f64 = 0.2;
 const MIN_BITRATE: f64 = 2_000_000.0;
 const MAX_BITRATE: f64 = 60_000_000.0;
 /// Seconds between forced key frames, so a client that lost a frame recovers on its own.
 const KEY_FRAME_SECONDS: u32 = 10;
+/// How long the picture has to stay unchanged before refinement starts.
+const REFINE_AFTER: Duration = Duration::from_millis(200);
+/// Reference frames the low-latency session may keep. Left alone it declares twelve, the
+/// picture buffer mstsc disconnected on at 1920x1200; limited to one it sends only key frames.
+const LOW_LATENCY_REFERENCES: i32 = 2;
+/// Without quantiser control, refinement re-encodes the picture this many times, each with the
+/// bitrate raised by `REFINE_BOOST`; a larger boost measured the same.
+const BOOSTED_REFINEMENTS: u32 = 3;
+const REFINE_BOOST: u32 = 4;
 
 #[derive(Debug)]
 pub struct EncodeError(String);
@@ -59,6 +78,8 @@ pub struct EncodedFrame {
     /// Annex B byte stream: start code, NAL unit, start code, NAL unit...
     pub data: Vec<u8>,
     pub key_frame: bool,
+    /// The base quantiser, when the encoder chose it.
+    pub qp: Option<i32>,
 }
 
 /// Where the output callback leaves its result for the thread that called `encode`.
@@ -68,16 +89,34 @@ struct Sink {
     error: Option<i32>,
 }
 
+/// Who decides how coarsely a frame is quantised.
+enum Control {
+    /// We do, for every frame, in VideoToolbox's low-latency mode.
+    Quantiser(QpControl),
+    /// VideoToolbox's rate control does, aiming at the average bitrate. `refinements` counts
+    /// the boosted re-encodes of the current picture.
+    Bitrate { refinements: u32, refined_at: Instant },
+}
+
 pub struct H264Encoder {
     session: CFRetained<VTCompressionSession>,
+    control: Control,
     target_bitrate: u32,
+    bitrate: u32,
     // Boxed so its address stays stable; the session's callback reads it through a raw pointer.
     sink: Box<Mutex<Sink>>,
     width: u32,
     height: u32,
-    fps: i32,
-    frame: i64,
     key_frame_requested: bool,
+    last_key_frame: Instant,
+    /// Presentation times are real time since this instant, so VideoToolbox's rate control
+    /// gives a frame that follows a still second a second's worth of bits.
+    started: Instant,
+    converter: Converter,
+    /// The newest picture, kept for refinement, and whether the client still lacks it.
+    latest: Option<CFRetained<CVPixelBuffer>>,
+    unsent: bool,
+    changed_at: Instant,
 }
 
 // The session is only driven from the thread that owns the encoder; VideoToolbox calls the
@@ -91,53 +130,25 @@ impl H264Encoder {
         }
         let fps = fps.clamp(1, 120) as i32;
         let sink = Box::new(Mutex::new(Sink::default()));
+        let converter = Converter::new().ok_or_else(|| EncodeError("vImage has no BT.709 conversion".into()))?;
+        let bitrate = target_bitrate(width, height, fps as u32);
+        let now = Instant::now();
 
-        let spec = unsafe {
-            CFDictionary::<CFString, CFType>::from_slices(
-                &[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder],
-                &[CFBoolean::new(true).as_ref()],
-            )
-        };
-        let format = CFNumber::new_i32(kCVPixelFormatType_32BGRA as i32);
-        let w = CFNumber::new_i32(width as i32);
-        let h = CFNumber::new_i32(height as i32);
-        let iosurface = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
-        let attributes = unsafe {
-            CFDictionary::<CFString, CFType>::from_slices(
-                &[
-                    kCVPixelBufferPixelFormatTypeKey,
-                    kCVPixelBufferWidthKey,
-                    kCVPixelBufferHeightKey,
-                    kCVPixelBufferIOSurfacePropertiesKey,
-                ],
-                &[format.as_ref(), w.as_ref(), h.as_ref(), iosurface.as_ref()],
-            )
+        let (session, control) = match quantiser_session(width, height, &sink) {
+            Some(session) => (session, Control::Quantiser(QpControl::new(bitrate, now))),
+            None => {
+                let session = open_session(width, height, false, &sink)?;
+                let control = Control::Bitrate {
+                    refinements: 0,
+                    refined_at: now,
+                };
+                (session, control)
+            }
         };
 
-        let mut raw: *mut VTCompressionSession = ptr::null_mut();
-        let status = unsafe {
-            VTCompressionSession::create(
-                None,
-                width as i32,
-                height as i32,
-                kCMVideoCodecType_H264,
-                Some(spec.as_opaque()),
-                Some(attributes.as_opaque()),
-                None,
-                Some(on_encoded),
-                &*sink as *const Mutex<Sink> as *mut c_void,
-                NonNull::from(&mut raw),
-            )
-        };
-        let Some(raw) = NonNull::new(raw).filter(|_| status == 0) else {
-            return Err(fail("VTCompressionSessionCreate", status));
-        };
-        let session = unsafe { CFRetained::from_raw(raw) };
-
-        let bitrate = target_bitrate(width, height, fps as u32) as i32;
         let yes = CFBoolean::new(true);
         let no = CFBoolean::new(false);
-        let rate = CFNumber::new_i32(bitrate);
+        let rate = CFNumber::new_i32(bitrate.min(i32::MAX as u32) as i32);
         let expected_fps = CFNumber::new_i32(fps);
         let key_interval = CFNumber::new_i32(fps * KEY_FRAME_SECONDS as i32);
         unsafe {
@@ -154,13 +165,19 @@ impl H264Encoder {
         }
         Ok(Self {
             session,
-            target_bitrate: bitrate as u32,
+            control,
+            target_bitrate: bitrate,
+            bitrate,
             sink,
             width,
             height,
-            fps,
-            frame: 0,
             key_frame_requested: true,
+            last_key_frame: now,
+            started: now,
+            converter,
+            latest: None,
+            unsent: false,
+            changed_at: now,
         })
     }
 
@@ -173,8 +190,22 @@ impl H264Encoder {
         self.target_bitrate
     }
 
+    /// Whether the encoder chooses every frame's quantiser, which makes refinement exact.
+    pub fn controls_quantiser(&self) -> bool {
+        matches!(self.control, Control::Quantiser(_))
+    }
+
     /// Changes the average bitrate; takes effect from the next frame.
     pub fn set_bitrate(&mut self, bits_per_second: u32) -> Result<(), EncodeError> {
+        match &mut self.control {
+            Control::Quantiser(control) => control.set_bitrate(bits_per_second),
+            Control::Bitrate { .. } => self.apply_bitrate(bits_per_second)?,
+        }
+        self.bitrate = bits_per_second;
+        Ok(())
+    }
+
+    fn apply_bitrate(&self, bits_per_second: u32) -> Result<(), EncodeError> {
         let rate = CFNumber::new_i32(bits_per_second.min(i32::MAX as u32) as i32);
         unsafe { set(&self.session, kVTCompressionPropertyKey_AverageBitRate, rate.as_ref()) }
     }
@@ -187,23 +218,103 @@ impl H264Encoder {
     /// Encodes one BGRA frame of the encoder's size. `Ok(None)` when VideoToolbox dropped the
     /// frame, which it may do under load.
     pub fn encode(&mut self, bgra: &[u8], stride: usize) -> Result<Option<EncodedFrame>, EncodeError> {
-        let row = self.width as usize * 4;
-        if stride < row || bgra.len() < stride * (self.height as usize - 1) + row {
-            return Err(EncodeError("frame smaller than the encoder size".into()));
-        }
         let pixels = self.pixel_buffer(bgra, stride)?;
+        self.encode_changed(pixels)
+    }
+
+    /// Keeps a frame the client is too far behind to take now; [`H264Encoder::refine`] sends it
+    /// once the screen is still, unless a newer frame replaces it first.
+    pub fn stage(&mut self, bgra: &[u8], stride: usize) -> Result<(), EncodeError> {
+        self.latest = Some(self.pixel_buffer(bgra, stride)?);
+        self.unsent = true;
+        Ok(())
+    }
+
+    /// Called while the screen is not changing: sends a picture the client has not had yet,
+    /// or encodes the current one again, sharper, once it has been still for a moment.
+    /// `Ok(None)` when there is nothing to do yet.
+    pub fn refine(&mut self) -> Result<Option<EncodedFrame>, EncodeError> {
+        let Some(pixels) = self.latest.clone() else {
+            return Ok(None);
+        };
+        if self.unsent {
+            return self.encode_changed(pixels);
+        }
+        let now = Instant::now();
+        if now.duration_since(self.changed_at) < REFINE_AFTER {
+            return Ok(None);
+        }
+        match &mut self.control {
+            Control::Quantiser(control) => match control.refinement(now) {
+                Some(qp) => self.submit(&pixels, Some(qp)),
+                None => Ok(None),
+            },
+            Control::Bitrate {
+                refinements,
+                refined_at,
+            } => {
+                if *refinements >= BOOSTED_REFINEMENTS || now.duration_since(*refined_at) < REFINE_AFTER {
+                    return Ok(None);
+                }
+                *refinements += 1;
+                *refined_at = now;
+                self.apply_bitrate(self.bitrate.saturating_mul(REFINE_BOOST))?;
+                let encoded = self.submit(&pixels, None);
+                self.apply_bitrate(self.bitrate)?;
+                encoded
+            }
+        }
+    }
+
+    fn encode_changed(&mut self, pixels: CFRetained<CVPixelBuffer>) -> Result<Option<EncodedFrame>, EncodeError> {
+        let now = Instant::now();
+        let qp = match &mut self.control {
+            Control::Quantiser(control) => {
+                let Some(qp) = control.changed(now) else {
+                    // Over the bitrate: hold the picture until there is room to send it.
+                    self.latest = Some(pixels);
+                    self.unsent = true;
+                    return Ok(None);
+                };
+                // Low-latency mode never inserts key frames of its own.
+                if now.duration_since(self.last_key_frame) >= Duration::from_secs(KEY_FRAME_SECONDS.into()) {
+                    self.key_frame_requested = true;
+                }
+                Some(qp)
+            }
+            Control::Bitrate { refinements, .. } => {
+                *refinements = 0;
+                None
+            }
+        };
+        let encoded = self.submit(&pixels, qp);
+        self.unsent = !matches!(encoded, Ok(Some(_)));
+        self.latest = Some(pixels);
+        self.changed_at = now;
+        encoded
+    }
+
+    /// Encodes one picture, with `qp` as its base quantiser in low-latency mode.
+    fn submit(&mut self, pixels: &CVPixelBuffer, qp: Option<i32>) -> Result<Option<EncodedFrame>, EncodeError> {
         let force_key = self.key_frame_requested;
-        let options = force_key.then(|| unsafe {
-            CFDictionary::<CFString, CFType>::from_slices(
-                &[kVTEncodeFrameOptionKey_ForceKeyFrame],
-                &[CFBoolean::new(true).as_ref()],
-            )
-        });
+        let yes = CFBoolean::new(true);
+        let quantiser = qp.map(CFNumber::new_i32);
+        let mut keys: Vec<&CFString> = Vec::with_capacity(2);
+        let mut values: Vec<&CFType> = Vec::with_capacity(2);
+        if force_key {
+            keys.push(unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame });
+            values.push(yes.as_ref());
+        }
+        if let Some(quantiser) = &quantiser {
+            keys.push(unsafe { kVTEncodeFrameOptionKey_BaseFrameQP });
+            values.push(quantiser.as_ref());
+        }
+        let options = (!keys.is_empty()).then(|| CFDictionary::<CFString, CFType>::from_slices(&keys, &values));
         let status = unsafe {
             self.session.encode_frame(
-                &pixels,
-                CMTime::new(self.frame, self.fps),
-                CMTime::new(1, self.fps),
+                pixels,
+                CMTime::new(self.started.elapsed().as_micros() as i64, 1_000_000),
+                kCMTimeInvalid,
                 options.as_deref().map(|o| o.as_opaque()),
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -216,21 +327,34 @@ impl H264Encoder {
         if status != 0 {
             return Err(fail("VTCompressionSessionCompleteFrames", status));
         }
-        self.frame += 1;
-        let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(status) = sink.error.take() {
-            return Err(fail("encoding", status));
-        }
-        let output = sink.output.take();
-        if output.as_ref().is_some_and(|f| f.key_frame) {
-            self.key_frame_requested = false;
+        let mut output = {
+            let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(status) = sink.error.take() {
+                return Err(fail("encoding", status));
+            }
+            sink.output.take()
+        };
+        if let Some(frame) = output.as_mut() {
+            let now = Instant::now();
+            if frame.key_frame {
+                self.key_frame_requested = false;
+                self.last_key_frame = now;
+            }
+            if let (Control::Quantiser(control), Some(qp)) = (&mut self.control, qp) {
+                control.record(qp, frame.data.len(), now);
+            }
+            frame.qp = qp;
         }
         Ok(output)
     }
 
-    /// Copies the frame into a buffer from the session's pool, which VideoToolbox can read
-    /// without a further copy.
+    /// Converts the frame into a full-range BT.709 buffer from the session's pool, which
+    /// VideoToolbox reads without a further copy.
     fn pixel_buffer(&self, bgra: &[u8], stride: usize) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
+        let row = self.width as usize * 4;
+        if stride < row || bgra.len() < stride * (self.height as usize - 1) + row {
+            return Err(EncodeError("frame smaller than the encoder size".into()));
+        }
         let pool = unsafe { self.session.pixel_buffer_pool() }
             .ok_or_else(|| EncodeError("the compression session has no pixel buffer pool".into()))?;
         let mut raw: *mut CVPixelBuffer = ptr::null_mut();
@@ -243,21 +367,121 @@ impl H264Encoder {
         if status != 0 {
             return Err(fail("CVPixelBufferLockBaseAddress", status));
         }
-        let base = CVPixelBufferGetBaseAddress(&buffer) as *mut u8;
-        let dst_stride = CVPixelBufferGetBytesPerRow(&buffer);
-        let row = self.width as usize * 4;
-        if !base.is_null() && dst_stride >= row {
-            for y in 0..self.height as usize {
-                let src = &bgra[y * stride..y * stride + row];
-                unsafe { ptr::copy_nonoverlapping(src.as_ptr(), base.add(y * dst_stride), row) };
-            }
-        }
+        let planes = Nv12Planes {
+            y: CVPixelBufferGetBaseAddressOfPlane(&buffer, 0) as *mut u8,
+            y_stride: CVPixelBufferGetBytesPerRowOfPlane(&buffer, 0),
+            cbcr: CVPixelBufferGetBaseAddressOfPlane(&buffer, 1) as *mut u8,
+            cbcr_stride: CVPixelBufferGetBytesPerRowOfPlane(&buffer, 1),
+        };
+        let usable = !planes.y.is_null()
+            && !planes.cbcr.is_null()
+            && planes.y_stride >= self.width as usize
+            && planes.cbcr_stride >= (self.width as usize).div_ceil(2) * 2;
+        let converted = usable
+            && unsafe {
+                self.converter
+                    .convert(bgra, stride, self.width as usize, self.height as usize, &planes)
+            };
         unsafe { CVPixelBufferUnlockBaseAddress(&buffer, CVPixelBufferLockFlags::empty()) };
-        if base.is_null() || dst_stride < row {
-            return Err(EncodeError("pixel buffer has no usable memory".into()));
+        if !converted {
+            return Err(EncodeError("converting the frame to YUV failed".into()));
         }
         Ok(buffer)
     }
+}
+
+/// A hardware H.264 session taking full-range 4:2:0 frames, which we convert ourselves because
+/// VideoToolbox would turn BGRA into limited range. `low_latency` asks for the mode that accepts
+/// a quantiser with every frame.
+fn open_session(
+    width: u32,
+    height: u32,
+    low_latency: bool,
+    sink: &Mutex<Sink>,
+) -> Result<CFRetained<VTCompressionSession>, EncodeError> {
+    let yes = CFBoolean::new(true);
+    let spec = unsafe {
+        if low_latency {
+            CFDictionary::<CFString, CFType>::from_slices(
+                &[
+                    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
+                    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+                ],
+                &[yes.as_ref(), yes.as_ref()],
+            )
+        } else {
+            CFDictionary::<CFString, CFType>::from_slices(
+                &[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder],
+                &[yes.as_ref()],
+            )
+        }
+    };
+    let format = CFNumber::new_i32(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange as i32);
+    let w = CFNumber::new_i32(width as i32);
+    let h = CFNumber::new_i32(height as i32);
+    let iosurface = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
+    let attributes = unsafe {
+        CFDictionary::<CFString, CFType>::from_slices(
+            &[
+                kCVPixelBufferPixelFormatTypeKey,
+                kCVPixelBufferWidthKey,
+                kCVPixelBufferHeightKey,
+                kCVPixelBufferIOSurfacePropertiesKey,
+            ],
+            &[format.as_ref(), w.as_ref(), h.as_ref(), iosurface.as_ref()],
+        )
+    };
+    let mut raw: *mut VTCompressionSession = ptr::null_mut();
+    let status = unsafe {
+        VTCompressionSession::create(
+            None,
+            width as i32,
+            height as i32,
+            kCMVideoCodecType_H264,
+            Some(spec.as_opaque()),
+            Some(attributes.as_opaque()),
+            None,
+            Some(on_encoded),
+            sink as *const Mutex<Sink> as *mut c_void,
+            NonNull::from(&mut raw),
+        )
+    };
+    let Some(raw) = NonNull::new(raw).filter(|_| status == 0) else {
+        return Err(fail("VTCompressionSessionCreate", status));
+    };
+    Ok(unsafe { CFRetained::from_raw(raw) })
+}
+
+/// A low-latency session that takes a base quantiser with every frame, or `None` where the
+/// hardware offers no such session.
+fn quantiser_session(width: u32, height: u32, sink: &Mutex<Sink>) -> Option<CFRetained<VTCompressionSession>> {
+    let session = open_session(width, height, true, sink).ok()?;
+    let references = CFNumber::new_i32(LOW_LATENCY_REFERENCES);
+    let usable = unsafe {
+        supports_base_qp(&session)
+            && set(&session, kVTCompressionPropertyKey_ReferenceBufferCount, references.as_ref()).is_ok()
+    };
+    if !usable {
+        unsafe { session.invalidate() };
+        return None;
+    }
+    Some(session)
+}
+
+/// Whether the session takes a base quantiser with every frame.
+unsafe fn supports_base_qp(session: &VTCompressionSession) -> bool {
+    let mut value: *const CFType = ptr::null();
+    let status = VTSessionCopyProperty(
+        session,
+        kVTCompressionPropertyKey_SupportsBaseFrameQP,
+        None,
+        &mut value as *mut *const CFType as *mut c_void,
+    );
+    let Some(value) = NonNull::new(value as *mut CFType).filter(|_| status == 0) else {
+        return false;
+    };
+    let value = CFRetained::from_raw(value);
+    value.downcast_ref::<CFBoolean>().is_some_and(|b| b.as_bool())
 }
 
 impl Drop for H264Encoder {
@@ -332,7 +556,7 @@ fn is_key_frame(sample: &CMSampleBuffer) -> bool {
 }
 
 /// The sample's bitstream converted from length-prefixed NAL units to Annex B, with the
-/// parameter sets in front when it is a key frame.
+/// parameter sets in front when it is a key frame; the SPS gets our VUI (see `sps`).
 fn annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
     let key_frame = is_key_frame(sample);
     let description = unsafe { sample.format_description() }?;
@@ -377,12 +601,16 @@ fn annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
             if status != 0 || set.is_null() {
                 return None;
             }
+            let set = unsafe { std::slice::from_raw_parts(set, size) };
             data.extend_from_slice(&START_CODE);
-            data.extend_from_slice(unsafe { std::slice::from_raw_parts(set, size) });
+            match crate::sps::with_vui(set) {
+                Some(sps) => data.extend_from_slice(&sps),
+                None => data.extend_from_slice(set),
+            }
         }
     }
     avcc_to_annex_b(&avcc, length_size as usize, &mut data)?;
-    Some(EncodedFrame { data, key_frame })
+    Some(EncodedFrame { data, key_frame, qp: None })
 }
 
 /// Rewrites NAL units carrying a big-endian length prefix of `length_size` bytes as Annex B.
@@ -440,5 +668,25 @@ mod tests {
         assert!(!second.key_frame);
         encoder.set_bitrate(1_000_000).expect("bitrate change mid-stream");
         assert!(encoder.encode(&frame, (w * 4) as usize).expect("encode").is_some());
+    }
+
+    #[test]
+    fn refines_a_still_picture_and_sends_a_held_one() {
+        let (w, h) = (320u32, 240u32);
+        let stride = (w * 4) as usize;
+        let mut encoder = H264Encoder::new(w, h, 30).expect("encoder");
+        assert!(encoder.refine().expect("refine").is_none(), "nothing to refine yet");
+        let mut frame: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
+        encoder.encode(&frame, stride).expect("encode").expect("frame");
+        assert!(encoder.refine().expect("refine").is_none(), "not still for long enough");
+        std::thread::sleep(REFINE_AFTER + Duration::from_millis(50));
+        let refined = encoder.refine().expect("refine").expect("a sharper frame once still");
+        assert!(!refined.key_frame);
+        if encoder.controls_quantiser() {
+            assert!(refined.qp.is_some_and(|qp| qp < 24), "finer than new content: {:?}", refined.qp);
+        }
+        frame.iter_mut().step_by(5).for_each(|b| *b = 0);
+        encoder.stage(&frame, stride).expect("stage");
+        assert!(encoder.refine().expect("refine").is_some(), "a held frame goes out at once");
     }
 }
