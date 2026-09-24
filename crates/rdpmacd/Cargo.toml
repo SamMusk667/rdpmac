@@ -1,0 +1,25 @@
+[package]
+name = "rdpmacd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "rdpmac daemon: an RDP server for the macOS console session"
+
+[[bin]]
+name = "rdpmacd"
+path = "src/main.rs"
+
+[dependencies]
+rdpmac-auth = { path = "../rdpmac-auth" }
+rdpmac-session = { path = "../rdpmac-session" }
+screenio-core.workspace = true
+ironrdp-server.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rcgen.workspace = true
+directories.workspace = true

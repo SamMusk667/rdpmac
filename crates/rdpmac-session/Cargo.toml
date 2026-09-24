@@ -1,0 +1,18 @@
+[package]
+name = "rdpmac-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "IronRDP display and input handlers backed by libscreenio"
+
+[dependencies]
+screenio-core.workspace = true
+rdpmac-encode = { path = "../rdpmac-encode" }
+ironrdp-server.workspace = true
+ironrdp-pdu.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+anyhow.workspace = true

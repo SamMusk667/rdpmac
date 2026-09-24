@@ -1,0 +1,17 @@
+[package]
+name = "rdpmac-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Credential validation for rdpmacd: PAM, static credentials, failure lockout"
+
+[dependencies]
+ironrdp-server.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
