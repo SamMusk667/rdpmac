@@ -52,7 +52,9 @@ target/release/rdpmacd --request-permissions
 ```
 
 画面默认在客户端支持时走 H.264（`--codec auto`，VideoToolbox 硬件编码，经图形管线发送，不超过 4096x2304），
-否则走 RemoteFX；`--codec remotefx` 固定用 RemoteFX。纯文本剪贴板默认双向共享，`--no-clipboard` 关闭。
+否则走 RemoteFX；`--codec remotefx` 固定用 RemoteFX。H.264 按规范用全范围 BT.709；画面停下约 0.2 秒后，服务端
+用更细的量化参数把当前画面再编一次，文字接近无损，变化中的画面则按码率取量化参数。纯文本剪贴板默认双向共享，
+`--no-clipboard` 关闭。
 
 会话分辨率默认跟随客户端（`--resolution follow-client`）：mstsc 的 `/w`、`/h`、全屏、.rdp 里的 `desktopwidth` 与
 `desktopheight` 决定连接时的分辨率，启用动态分辨率时拖动窗口会实时调整。
@@ -65,7 +67,8 @@ target/release/rdpmacd --request-permissions
 - `--resolution native` 恢复为显示器自身的像素尺寸。
 
 首次运行会在 `~/Library/Application Support/rdpmac/` 生成 TLS 自签名证书。采集需要"屏幕录制"权限，注入需要
-"辅助功能"权限；没有权限时服务仍会接受连接，但客户端看不到画面、键鼠不生效，启动日志会说明 macOS 检查的是哪个进程。
+"辅助功能"权限；没有权限时服务仍会接受连接，但客户端看不到画面、键鼠不生效，启动日志会说明 macOS 检查的是哪个进程，
+每个连接接入时也会写明缺辅助功能权限。服务运行中才授权的，要重启服务才生效：菜单栏 App 这时会提示并给出重启按钮。
 
 ### 设置文件与控制套接字
 
