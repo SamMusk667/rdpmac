@@ -9,8 +9,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use ironrdp_server::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
-use screenio_core::{key_flags, Input, MouseButton};
-use tracing::{debug, error, warn};
+use ironrdp_pdu::input::fast_path::SynchronizeFlags;
+use screenio_core::{key_flags, lock_flags, Input, MouseButton};
+use tracing::{error, warn};
 
 use crate::{current, SharedGeometry};
 
@@ -62,6 +63,23 @@ fn utf16_unit(pending: &mut Option<u16>, unit: u16) -> Option<u32> {
     }
 }
 
+fn lock_bits(flags: SynchronizeFlags) -> u32 {
+    let mut bits = 0;
+    if flags.contains(SynchronizeFlags::CAPS_LOCK) {
+        bits |= lock_flags::CAPS;
+    }
+    if flags.contains(SynchronizeFlags::NUM_LOCK) {
+        bits |= lock_flags::NUM;
+    }
+    if flags.contains(SynchronizeFlags::SCROLL_LOCK) {
+        bits |= lock_flags::SCROLL;
+    }
+    if flags.contains(SynchronizeFlags::KANA_LOCK) {
+        bits |= lock_flags::KANA;
+    }
+    bits
+}
+
 fn button_event(event: &MouseEvent) -> Option<(MouseButton, bool)> {
     Some(match event {
         MouseEvent::LeftPressed => (MouseButton::Left, true),
@@ -101,10 +119,7 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
                 None => Ok(()),
             },
             Event::Key(KeyboardEvent::UnicodeReleased(_)) => Ok(()),
-            Event::Key(KeyboardEvent::Synchronize(flags)) => {
-                debug!(?flags, "lock key synchronisation not implemented yet");
-                Ok(())
-            }
+            Event::Key(KeyboardEvent::Synchronize(flags)) => input.sync_locks(lock_bits(flags)),
             #[allow(unreachable_patterns)]
             Event::Key(_) => Ok(()),
             Event::Mouse(MouseEvent::Move { x, y }) => {

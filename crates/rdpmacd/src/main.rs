@@ -10,7 +10,7 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use ironrdp_server::{CredentialValidator, RdpServer, TlsIdentityCtx};
 use rdpmac_auth::{Lockout, StaticValidator};
-use rdpmac_session::display::DisplayHandler;
+use rdpmac_session::display::{DisplayHandler, FrameSource};
 use rdpmac_session::input::InputHandler;
 use rdpmac_session::monitor::{FixedMonitor, MonitorPolicy, PrimaryMonitor};
 use rdpmac_session::Geometry;
@@ -69,6 +69,12 @@ async fn main() -> anyhow::Result<()> {
     init_logging()?;
     let args = Args::parse();
 
+    if args.request_permissions {
+        let info = screenio_core::request_permissions();
+        info!(?info, "permission prompts shown; grant them in System Settings and restart");
+        return Ok(());
+    }
+
     let dir = data_dir(&args)?;
     let cert = args.cert.clone().unwrap_or_else(|| dir.join("cert.pem"));
     let key = args.key.clone().unwrap_or_else(|| dir.join("key.pem"));
@@ -80,24 +86,56 @@ async fn main() -> anyhow::Result<()> {
         Some(id) => Arc::new(FixedMonitor(id)),
         None => Arc::new(PrimaryMonitor),
     };
-    let displays = screenio_core::list_displays().context("listing displays")?;
-    let Some(chosen) = policy.select(&displays) else {
-        bail!("no matching display; available: {:?}", displays.iter().map(|d| d.id).collect::<Vec<_>>());
+    let displays = screenio_core::list_displays().unwrap_or_else(|e| {
+        warn!(%e, "listing displays failed");
+        Vec::new()
+    });
+    let initial = match (policy.select(&displays), args.test_pattern) {
+        (_, Some((width, height))) => Geometry {
+            id: 0,
+            x: 0,
+            y: 0,
+            width,
+            height,
+            scale: 1.0,
+        },
+        (Some(chosen), None) => {
+            info!(
+                display = chosen.id,
+                width = chosen.width,
+                height = chosen.height,
+                scale = chosen.scale,
+                session = ?screenio_core::session_info(),
+                "serving display"
+            );
+            Geometry::from_display(&chosen)
+        }
+        (None, None) => {
+            // Displays asleep or detached at startup: keep serving, the capture loop retries.
+            warn!(available = ?displays.iter().map(|d| d.id).collect::<Vec<_>>(), "no matching display yet");
+            Geometry {
+                id: args.display.unwrap_or(0),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+            }
+        }
     };
-    let geometry = rdpmac_session::shared(Geometry::from_display(&chosen));
-    info!(
-        display = chosen.id,
-        width = chosen.width,
-        height = chosen.height,
-        scale = chosen.scale,
-        session = ?screenio_core::session_info(),
-        "serving display"
-    );
-    if !screenio_core::session_info().can_capture {
+    let geometry = rdpmac_session::shared(initial);
+    if args.test_pattern.is_none() && !screenio_core::session_info().can_capture {
         warn!("screen recording permission is missing; connections will see no picture");
     }
 
-    let display_handler = DisplayHandler::new(policy, geometry.clone(), args.fps, args.cursor_hz);
+    let source = match args.test_pattern {
+        Some((width, height)) => {
+            warn!(width, height, "serving a test pattern instead of the screen");
+            FrameSource::TestPattern { width, height }
+        }
+        None => FrameSource::Screen,
+    };
+    let display_handler = DisplayHandler::with_source(policy, geometry.clone(), source, args.fps, args.cursor_hz);
     let input_handler = InputHandler::spawn(geometry);
     let validator = validator(&args)?;
 

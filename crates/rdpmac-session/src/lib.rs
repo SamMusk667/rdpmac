@@ -8,6 +8,7 @@ pub mod cursor;
 pub mod display;
 pub mod input;
 pub mod monitor;
+pub mod pattern;
 
 use std::sync::{Arc, Mutex};
 

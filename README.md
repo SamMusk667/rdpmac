@@ -15,22 +15,26 @@ docs/adr                架构决策记录
 ## 运行
 
 ```sh
-cargo build
+cargo build --release
 # 静态凭据，便于本机联调：
-RDPMAC_LOG=info target/debug/rdpmacd --listen 0.0.0.0:33389 --auth static --user test --password test
+RDPMAC_LOG=info target/release/rdpmacd --listen 0.0.0.0:33389 --auth static --user test --password test
 # 用本机账号登录（PAM 服务 checkpw）：
-RDPMAC_LOG=info target/debug/rdpmacd --listen 0.0.0.0:3389
+RDPMAC_LOG=info target/release/rdpmacd --listen 0.0.0.0:3389
+# 不需要任何权限的合成画面，用来测客户端和编码开销：
+target/release/rdpmacd --test-pattern 1920x1080 --auth static --user test --password test
+# 触发屏幕录制与辅助功能的系统提示后退出：
+target/release/rdpmacd --request-permissions
 ```
 
 首次运行会在 `~/Library/Application Support/rdpmac/` 生成自签名证书。采集需要宿主进程拥有"屏幕录制"权限，
-注入需要"辅助功能"权限；没有权限时服务仍会接受连接，但客户端看不到画面。
+注入需要"辅助功能"权限；没有权限时服务仍会接受连接，但客户端看不到画面。从终端启动时权限记在终端 App 上；
+作为独立程序运行时记在 `rdpmacd` 的签名身份上，`scripts/sign-dev.sh` 用稳定证书签名可让授权在重新构建后保留，
+`Info.plist` 已随二进制嵌入，标识符 `com.rdpmac.rdpmacd`。
 
 ## 状态
 
-M1（第一帧）进行中。2026-09-24 的本机联调：`rdpmacd` 以静态凭据监听，FreeRDP 的 sdl-freerdp 完成 X.224 协商、
-TLS 握手、能力交换与凭据校验，进入会话循环并干净断开；无客户端画面时守护进程 CPU 约 0.1%。因为本进程还没有
-"屏幕录制"权限，帧与键鼠注入尚未实机验证。接下来：授予权限后验证画面与输入，libscreenio 补锁定键同步，
-用 mstsc 与 Windows App 各连一次并记录协商结果与 RemoteFX 的帧率、CPU。
+里程碑进度与实测数字见 `docs/milestones.md`。M1 的协议、认证、光标、输入、锁定键同步、日志与统计都已接线并在
+本机用 FreeRDP 客户端验证；真实屏幕的画面与键鼠注入还差"屏幕录制"和"辅助功能"两项权限的实机验证。
 
 已知与已发布的 IronRDP 0.13.0 相关的限制：光标形状超过 96 像素时不发送（大光标更新在 IronRDP 主分支上才有），
 水平滚轮事件没有对应变体，鼠标按键事件不带坐标（以最近一次移动为准）。

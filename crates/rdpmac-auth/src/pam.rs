@@ -198,3 +198,21 @@ impl CredentialValidator for PamValidator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exercises the real PAM stack: an account that cannot exist must be rejected, not error.
+    #[tokio::test]
+    async fn unknown_account_is_rejected() {
+        let validator = PamValidator::new("checkpw");
+        let creds = Credentials {
+            username: "rdpmac-no-such-user-8f3a".into(),
+            password: "irrelevant".into(),
+            domain: None,
+        };
+        let decision = validator.validate(&creds).await.expect("pam backend reachable");
+        assert_eq!(decision, CredentialDecision::Reject);
+    }
+}

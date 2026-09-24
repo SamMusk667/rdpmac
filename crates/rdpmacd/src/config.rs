@@ -56,4 +56,25 @@ pub struct Args {
     /// Directory for generated state; defaults to ~/Library/Application Support/rdpmac.
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
+
+    /// Serve a synthetic moving picture of this size (for example 1920x1080) instead of the
+    /// screen. Needs no permission; used to test clients and measure encoding cost.
+    #[arg(long, value_parser = parse_size)]
+    pub test_pattern: Option<(u32, u32)>,
+
+    /// Trigger the macOS permission prompts for screen recording and accessibility, then exit.
+    #[arg(long)]
+    pub request_permissions: bool,
+}
+
+fn parse_size(text: &str) -> Result<(u32, u32), String> {
+    let (w, h) = text
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected WIDTHxHEIGHT, got {text}"))?;
+    let parse = |v: &str| v.trim().parse::<u32>().map_err(|e| format!("{v}: {e}"));
+    let (w, h) = (parse(w)?, parse(h)?);
+    if !(16..=8192).contains(&w) || !(16..=8192).contains(&h) {
+        return Err("size must be between 16x16 and 8192x8192".into());
+    }
+    Ok((w, h))
 }
