@@ -54,8 +54,11 @@ H.264 只用于不超过 4096x2304 的会话：Windows 的 Media Foundation H.26
 每用户的 RDP 凭据库面向独立 Mac，Kerberos 与 keytab 面向加入域的 Mac。
 
 **D5 进程模型。** Rust 守护进程 `rdpmacd` 运行在用户登录会话中的 LaunchAgent 里，负责监听、会话、采集、编码、注入；
-Swift 菜单栏 App 负责权限引导、证书与设置、状态显示、更新；两者用本机 Unix socket 通信。守护进程签名为带稳定
-bundle identifier 的可执行文件，这样 TCC 授权在重新构建后仍然有效。
+Swift 菜单栏 App 负责权限引导、证书与设置、状态显示、更新；两者用本机 Unix socket 通信。TCC 按"负责进程"检查
+权限：从终端启动时是终端 App，经 SSH 启动时是 sshd，只有由 launchd 作为 LaunchAgent 启动时才是 `rdpmacd` 自己，
+所以权限只授给以 LaunchAgent 方式运行的 `rdpmacd`。守护进程每次构建都用同一张证书签名（开发期用自签名证书，
+发布用 Developer ID），指定要求是标识符 `com.rdpmac.rdpmacd` 加证书，TCC 授权在重新构建后仍然有效；链接器默认的
+ad-hoc 签名只认二进制的哈希，重新构建一次授权就失效。
 
 **D6 仓库与许可。** 产品名 rdpmac，守护进程 `rdpmacd`，仓库 `~/works/rdpmac`（Cargo workspace）。libscreenio 保持独立
 仓库，Apache-2.0。rdpmac 采用与 RustDesk 相同的双许可：免费版 AGPL-3.0，Pro 版加入更多功能并以商业许可发布，
@@ -259,3 +262,4 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 | 2026-09-23 | 初版，同日接受 |
 | 2026-09-24 | D3 补充 H.264 的尺寸上限 4096x2304，依据是 mstsc 解码器的上限与 8K 实测 |
 | 2026-09-24 | 新增 D8 分辨率跟随客户端，调整 M2 到 M5 的范围、第 3.4 节接口映射、第 5 节 libscreenio 改动、第 8 节风险、第 11 节已决问题 |
+| 2026-09-24 | D5 写明 TCC 按负责进程检查权限，授权对象是以 LaunchAgent 方式运行的 `rdpmacd`，并要求用固定证书签名；依据是经 SSH 启动时 TCC 日志把 sshd 记为负责进程 |

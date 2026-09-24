@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use crate::config::{Args, AuthMode, Codec, Resolution};
 
 fn init_logging() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::builder()
@@ -26,7 +27,7 @@ fn init_logging() -> anyhow::Result<()> {
         .with_env_var("RDPMAC_LOG")
         .from_env_lossy();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().compact())
+        .with(tracing_subscriber::fmt::layer().compact().with_ansi(std::io::stdout().is_terminal()))
         .with(filter)
         .try_init()
         .context("logging setup")
@@ -62,6 +63,36 @@ fn validator(args: &Args) -> anyhow::Result<Arc<dyn CredentialValidator>> {
             }
         }
     })
+}
+
+/// macOS checks both permissions against the process responsible for rdpmacd: rdpmacd itself when
+/// launchd starts it, otherwise the terminal app or, over SSH, sshd.
+fn warn_missing_permissions(info: &screenio_core::SessionInfo) {
+    if !info.can_capture {
+        warn!("screen recording permission is missing; connections will see no picture");
+    }
+    if !info.can_inject {
+        warn!("accessibility permission is missing; keyboard and mouse input from clients is dropped");
+    }
+    if info.can_capture && info.can_inject {
+        return;
+    }
+    let over_ssh = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_CLIENT").is_some();
+    // System Settings lists Terminal under its app name, not the TERM_PROGRAM value.
+    match std::env::var("TERM_PROGRAM").map(|app| if app == "Apple_Terminal" { "Terminal".into() } else { app }) {
+        _ if over_ssh => warn!(
+            "started over SSH, so macOS checks the permissions of sshd, not rdpmacd; \
+             run rdpmacd as a LaunchAgent: sh scripts/agent.sh install"
+        ),
+        Ok(app) => warn!(
+            "started from {app}, so macOS checks the permissions of {app}, not rdpmacd; \
+             grant them to {app} or run rdpmacd as a LaunchAgent: sh scripts/agent.sh install"
+        ),
+        Err(_) => warn!(
+            "turn rdpmacd on under System Settings > Privacy & Security for both permissions, \
+             then restart it"
+        ),
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -110,8 +141,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let geometry = rdpmac_session::shared(initial);
-    if args.test_pattern.is_none() && !screenio_core::session_info().can_capture {
-        warn!("screen recording permission is missing; connections will see no picture");
+    if args.test_pattern.is_none() {
+        warn_missing_permissions(&screenio_core::session_info());
     }
 
     let source = match args.test_pattern {
