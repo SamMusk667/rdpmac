@@ -60,6 +60,12 @@ Swift 菜单栏 App 负责权限引导、证书与设置、状态显示、更新
 发布用 Developer ID），指定要求是标识符 `com.rdpmac.rdpmacd` 加证书，TCC 授权在重新构建后仍然有效；链接器默认的
 ad-hoc 签名只认二进制的哈希，重新构建一次授权就失效。
 
+`rdpmacd` 随 App 分发，放在 `rdpmac.app/Contents/MacOS/`。带 Team ID 的 App 用 SMAppService 从包内的 plist 注册服务；
+macOS 不会启动没有 Team ID 的 App 注册的辅助程序，所以开发构建和自行编译的免费版改用 `~/Library/LaunchAgents` 里
+按完整路径运行同一个 `rdpmacd` 的经典 LaunchAgent。两种方式下负责进程都是 `rdpmacd` 自己。设置存在数据目录的
+`config.toml`，命令行优先；App 通过数据目录里的 Unix socket 读取状态、改设置、导入证书、请求权限和重启服务，
+每行一个 JSON 请求，只接受同一用户的连接。
+
 **D6 仓库与许可。** 产品名 rdpmac，守护进程 `rdpmacd`，仓库 `~/works/rdpmac`（Cargo workspace）。libscreenio 保持独立
 仓库，Apache-2.0。rdpmac 采用与 RustDesk 相同的双许可：免费版 AGPL-3.0，Pro 版加入更多功能并以商业许可发布，
 因此需要贡献者协议以保留双许可权利；Pro 功能放在闭源的独立仓库，以 crate 形式接入。libscreenio 在有远程仓库前
@@ -81,6 +87,9 @@ mstsc、Windows App、Microsoft Remote Desktop for Mac、FreeRDP、IronRDP clien
 2. **rdpmac 自建虚拟显示器（M3，免费版）。** 通过私有接口 CGVirtualDisplay 按客户端请求的像素尺寸创建显示器，
    会话中按新布局改模式，原生分辨率、不缩放，彻底去掉对 BetterDisplay 的依赖。私有接口做运行时检测，
    不可用时退回第 1 步的缩放。单块虚拟显示器进免费版，因为不接显示器的 Mac mini 是最常见的部署形态。
+   实现（2026-09-24）：只在没有接显示器、只剩系统占位显示器时创建，它替代占位显示器成为桌面；接了显示器时不动它，
+   继续缩放。显示器在凭据通过后创建，改尺寸时原地换模式，最后一个会话结束 30 秒后移除。只用 1x 模式，因为显式切换
+   模式会让窗口服务器忽略之后的设置；macOS 26 把 3840x2160 定成 1920x1080，这种尺寸退回缩放。HiDPI 暂缓。
 3. **物理显示器切换模式（M4）。** 接了显示器的 Mac 从显示器支持的模式里选最接近的，断开时恢复；默认关闭，
    避免打扰本地用户。
 
@@ -182,7 +191,7 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 - M2 补充：`Capturer::open_scaled` 让 ScreenCaptureKit 按指定尺寸输出；`CursorShape` 报告位图的像素与点之比，
   供服务端按会话缩放光标。
 - M3：`VirtualDisplay`，基于 CGVirtualDisplay，运行时检测可用性；`open_privacy_settings` 之类的权限引导辅助；
-  cbindgen 生成头文件并冻结 1.0 的 C ABI。
+  cbindgen 生成头文件并冻结 1.0 的 C ABI。已完成：C ABI 1.0 之后只做增量，结构体的大小与布局不再改变。
 - M4：显示模式切换、音频采集。多显示器采集的接口从 M1 起保留，实现归入 Pro。
 - Windows 与 Linux 后端只保留接口桩，优先级最低。
 
@@ -263,3 +272,4 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 | 2026-09-24 | D3 补充 H.264 的尺寸上限 4096x2304，依据是 mstsc 解码器的上限与 8K 实测 |
 | 2026-09-24 | 新增 D8 分辨率跟随客户端，调整 M2 到 M5 的范围、第 3.4 节接口映射、第 5 节 libscreenio 改动、第 8 节风险、第 11 节已决问题 |
 | 2026-09-24 | D5 写明 TCC 按负责进程检查权限，授权对象是以 LaunchAgent 方式运行的 `rdpmacd`，并要求用固定证书签名；依据是经 SSH 启动时 TCC 日志把 sshd 记为负责进程 |
+| 2026-09-24 | M3：D5 补充服务注册方式（有 Team ID 用 SMAppService，没有时用经典 LaunchAgent）、设置文件与控制 socket；D8 第 2 步写明实现范围：只在无显示器时创建、1x、4K 退回缩放、HiDPI 暂缓；第 5 节 libscreenio 的 M3 项完成，C ABI 冻结为 1.0 |
