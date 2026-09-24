@@ -70,6 +70,8 @@ pub struct sio_cursor_shape_t {
     /// Owned by the library; release with `sio_cursor_shape_free`.
     pub rgba: *mut u8,
     pub rgba_len: usize,
+    /// Bitmap pixels per point.
+    pub scale: f32,
 }
 
 #[repr(C)]
@@ -157,6 +159,26 @@ pub unsafe extern "C" fn sio_capture_open(display_id: u32, out: *mut *mut sio_ca
     })
 }
 
+/// Like `sio_capture_open`, but the frames are scaled to `width` x `height`.
+#[no_mangle]
+pub unsafe extern "C" fn sio_capture_open_scaled(
+    display_id: u32,
+    width: u32,
+    height: u32,
+    out: *mut *mut sio_capture_t,
+) -> i32 {
+    if out.is_null() {
+        return SIO_E_INVALID;
+    }
+    guard(|| match sio::Capturer::open_scaled(display_id, width, height) {
+        Ok(c) => {
+            *out = Box::into_raw(Box::new(sio_capture_t(c)));
+            SIO_OK
+        }
+        Err(e) => code(e),
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn sio_capture_frame(
     cap: *mut sio_capture_t,
@@ -228,6 +250,7 @@ pub unsafe extern "C" fn sio_cursor_shape(out: *mut sio_cursor_shape_t) -> i32 {
                 hot_y: s.hot_y,
                 rgba: ptr,
                 rgba_len,
+                scale: s.scale,
             };
             SIO_OK
         }

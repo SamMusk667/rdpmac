@@ -16,6 +16,10 @@ impl Capturer {
         Err(Error::Unsupported)
     }
 
+    pub fn open_scaled(_display_id: u32, _width: u32, _height: u32) -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
     pub fn width(&self) -> u32 {
         0
     }

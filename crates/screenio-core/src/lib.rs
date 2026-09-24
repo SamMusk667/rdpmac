@@ -93,6 +93,12 @@ impl Capturer {
         platform::Capturer::open(display_id).map(Capturer)
     }
 
+    /// Captures the display scaled to `width` x `height`, letterboxed and centred when the
+    /// aspect ratios differ. Scaling happens in the capture pipeline, not on the CPU.
+    pub fn open_scaled(display_id: u32, width: u32, height: u32) -> Result<Self> {
+        platform::Capturer::open_scaled(display_id, width, height).map(Capturer)
+    }
+
     pub fn width(&self) -> u32 {
         self.0.width()
     }
@@ -120,13 +126,16 @@ pub fn cursor_position() -> Result<CursorPosition> {
 
 /// The current cursor image. `id` changes whenever the shape changes, so a caller can poll
 /// cheaply and only upload a new pointer when it does.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CursorShape {
     pub id: u64,
     pub width: u32,
     pub height: u32,
     pub hot_x: i32,
     pub hot_y: i32,
+    /// Bitmap pixels per point (2.0 for a Retina rendition), so a caller serving a scaled
+    /// picture can resize the cursor to match.
+    pub scale: f32,
     /// 8-bit R, G, B, A, rows top-down, `width * height * 4` bytes.
     pub rgba: Vec<u8>,
 }

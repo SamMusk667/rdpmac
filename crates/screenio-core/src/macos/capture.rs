@@ -33,6 +33,8 @@ use std::{
 };
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Largest output side accepted for scaled capture; RDP itself stops at 8192.
+const MAX_OUTPUT_SIDE: u32 = 16384;
 const MAX_FPS: i32 = 60;
 const QUEUE_DEPTH: isize = 3;
 /// SCStreamErrorUserDeclined: screen recording was not granted to this process.
@@ -56,12 +58,18 @@ struct Slot {
 struct Shared {
     slot: Mutex<Slot>,
     ready: Condvar,
+    described: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
     fn publish(&self, sample: &CMSampleBuffer) {
         if frame_status(sample) != Some(SCFrameStatus::Complete.0) {
             return;
+        }
+        if !self.described.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if let Some(info) = frame_info(sample) {
+                log::debug!("first frame info: {}", info.description());
+            }
         }
         let Some(pixels) = (unsafe { sample.image_buffer() }) else {
             return;
@@ -104,13 +112,17 @@ impl Shared {
     }
 }
 
-/// Reads `SCStreamFrameInfoStatus` out of the sample's attachment dictionary.
-fn frame_status(sample: &CMSampleBuffer) -> Option<isize> {
+/// The sample's frame info dictionary (status, content rect, scale factors, dirty rects).
+fn frame_info(sample: &CMSampleBuffer) -> Option<Retained<NSDictionary<NSString, AnyObject>>> {
     let attachments = unsafe { sample.sample_attachments_array(false) }?;
-    // CFArray and NSArray are toll-free bridged; the dictionary holds NSNumber values.
     let array: &NSArray<NSDictionary<NSString, AnyObject>> =
         unsafe { &*(&*attachments as *const CFArray as *const NSArray<_>) };
-    let info = array.firstObject()?;
+    array.firstObject()
+}
+
+/// Reads `SCStreamFrameInfoStatus` out of the sample's attachment dictionary.
+fn frame_status(sample: &CMSampleBuffer) -> Option<isize> {
+    let info = frame_info(sample)?;
     let status = info.objectForKey(unsafe { SCStreamFrameInfoStatus })?;
     Some(status.downcast_ref::<NSNumber>()?.integerValue())
 }
@@ -221,13 +233,26 @@ unsafe impl Send for Capturer {}
 
 impl Capturer {
     pub fn open(display_id: u32) -> Result<Self> {
+        Self::open_with(display_id, None)
+    }
+
+    /// Captures the display scaled to `width` x `height`. ScreenCaptureKit does the scaling on
+    /// the GPU; when the aspect ratios differ the picture is letterboxed and centred.
+    pub fn open_scaled(display_id: u32, width: u32, height: u32) -> Result<Self> {
+        if !(1..=MAX_OUTPUT_SIDE).contains(&width) || !(1..=MAX_OUTPUT_SIDE).contains(&height) {
+            return Err(Error::Invalid);
+        }
+        Self::open_with(display_id, Some((width, height)))
+    }
+
+    fn open_with(display_id: u32, output: Option<(u32, u32)>) -> Result<Self> {
         let content = shareable_content()?;
         let displays = unsafe { content.displays() };
         let display = displays
             .iter()
             .find(|d| unsafe { d.displayID() } == display_id)
             .ok_or(Error::Invalid)?;
-        let (width, height) = pixel_size(&CGDisplay::new(display_id));
+        let (width, height) = output.unwrap_or_else(|| pixel_size(&CGDisplay::new(display_id)));
 
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingWindows(
@@ -246,6 +271,10 @@ impl Capturer {
             // The cursor is reported separately through `cursor_shape`, as a remote desktop
             // protocol draws it on the client side.
             config.setShowsCursor(false);
+            if output.is_some() {
+                config.setScalesToFit(true);
+                config.setPreservesAspectRatio(true);
+            }
         }
 
         let shared = Arc::new(Shared::default());

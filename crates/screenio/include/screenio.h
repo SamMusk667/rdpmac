@@ -61,6 +61,7 @@ typedef struct sio_cursor_shape_t {
     int32_t hot_x, hot_y;
     uint8_t *rgba;           /* width * height * 4, release with sio_cursor_shape_free */
     size_t rgba_len;
+    float scale;             /* bitmap pixels per point */
 } sio_cursor_shape_t;
 
 typedef struct sio_session_info_t {
@@ -75,6 +76,7 @@ const char *sio_strerror(int err);
 int  sio_display_list(sio_display_t *out, uint32_t cap, uint32_t *count);
 
 int  sio_capture_open(uint32_t display_id, sio_capture_t **out);
+int  sio_capture_open_scaled(uint32_t display_id, uint32_t width, uint32_t height, sio_capture_t **out);
 int  sio_capture_frame(sio_capture_t *cap, uint32_t timeout_ms, sio_frame_t *out);
 void sio_capture_close(sio_capture_t *cap);
 

@@ -76,6 +76,7 @@ pub fn cursor_shape() -> Result<CursorShape> {
             height: h as u32,
             hot_x: (hot.x * sx) as i32,
             hot_y: (hot.y * sy) as i32,
+            scale: sx as f32,
             rgba,
         })
     })

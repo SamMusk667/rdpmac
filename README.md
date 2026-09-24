@@ -40,6 +40,8 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
 ## 约定
 
 * 坐标是操作系统的虚拟桌面坐标；macOS 下是逻辑点，`sio_display_t.scale` 给出每个点对应的采集像素数。
+* `Capturer::open_scaled`（C 接口 `sio_capture_open_scaled`）让 ScreenCaptureKit 在 GPU 上把画面缩放到指定尺寸，
+  宽高比不同时居中加黑边。
 * 帧是 BGRA、行自上而下、带 stride；`data` 指针到下一次 `sio_capture_frame` 或 `sio_capture_close` 前有效。
   `sio_capture_frame` 只在画面有变化时返回新帧，超时返回 `SIO_E_TIMEOUT`；采集流被系统停止（显示器断开等）
   返回 `SIO_E_RESET`，此时应关闭并重新打开。
@@ -47,6 +49,7 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   修饰键状态由库自己维护并附在每个事件上。
 * 锁定键：`sync_locks` 按 RDP 的 TS_SYNC_EVENT 位同步；macOS 只有 Caps Lock，通过 IOKit 的 HID 系统读写状态。
 * 显示器列表包含已连接但休眠的显示器，面板关掉时服务仍能寻址它。
+* 光标形状带 `scale`，即位图像素与点之比，调用方按会话缩放光标时用它。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。
 * 所有函数同步返回，`0` 成功，负数为 `SIO_E_*`。
 
