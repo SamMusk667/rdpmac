@@ -49,6 +49,9 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   修饰键状态由库自己维护并附在每个事件上。
 * 锁定键：`sync_locks` 按 RDP 的 TS_SYNC_EVENT 位同步；macOS 只有 Caps Lock，通过 IOKit 的 HID 系统读写状态。
 * 显示器列表包含已连接但休眠的显示器，面板关掉时服务仍能寻址它。
+* 虚拟显示器：`VirtualDisplay`（C 接口 `sio_virtual_display_*`）基于私有接口 CGVirtualDisplay，运行时检测是否可用，
+  尺寸为 1x 像素。不接显示器的 Mac 上它替代系统的占位显示器（`placeholder` 为真的那块）成为桌面，释放后占位显示器
+  以新的 id 回来。macOS 26 会把 3840x2160 定成 1920x1080，这时 `resize` 返回错误，显示器保留系统选定的尺寸。
 * 光标形状带 `scale`，即位图像素与点之比，调用方按会话缩放光标时用它。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。
 * 所有函数同步返回，`0` 成功，负数为 `SIO_E_*`。
@@ -65,6 +68,7 @@ rustdesk 子模块用于对照：macOS 的光标读取、扫描码到 virtual ke
 * 键鼠注入的方向与修饰键行为需要在授予辅助功能权限后实机验证。
 * 锁定键同步（RDP 的 TS_SYNC_EVENT）与 Ctrl+Alt+Del。
 * 用 cbindgen 生成头文件（`cbindgen.toml` 已就位，目前头文件手写）。
+* 虚拟显示器的 HiDPI 模式：显式切换模式会让系统忽略之后的设置，需要另找办法。
 * Windows / Linux 后端。
 
 ## 设计决策

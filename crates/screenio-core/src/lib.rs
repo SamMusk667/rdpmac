@@ -64,6 +64,9 @@ pub struct DisplayInfo {
     pub scale: f32,
     pub primary: bool,
     pub name: String,
+    /// The stand-in display macOS keeps when no screen is attached. A [`VirtualDisplay`] replaces
+    /// it.
+    pub placeholder: bool,
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
@@ -110,6 +113,38 @@ impl Capturer {
     /// Waits up to `timeout` for a frame that differs from the last one returned.
     pub fn frame(&mut self, timeout: Duration) -> Result<Frame<'_>> {
         self.0.frame(timeout)
+    }
+}
+
+/// A display that exists only in software. On macOS it comes from the private CGVirtualDisplay
+/// API; on a Mac without a screen attached it replaces the placeholder display and becomes the
+/// desktop. It stays online while the value lives.
+pub struct VirtualDisplay(platform::VirtualDisplay);
+
+impl VirtualDisplay {
+    /// Whether this system can create virtual displays. Checked at run time, because the macOS
+    /// API is private.
+    pub fn is_supported() -> bool {
+        platform::VirtualDisplay::is_supported()
+    }
+
+    /// Creates a display of `width` x `height` pixels at 1x density and waits until it shows that
+    /// size. macOS refuses some large sizes, 3840x2160 among them; see [`VirtualDisplay::resize`].
+    pub fn create(name: &str, width: u32, height: u32) -> Result<Self> {
+        platform::VirtualDisplay::create(name, width, height).map(VirtualDisplay)
+    }
+
+    /// The display id used by [`list_displays`] and [`Capturer::open`].
+    pub fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Switches to another size and waits until the display shows it; the id stays. Sizes above
+    /// 3840x2400 need a display created at least that large. When macOS settles on another size
+    /// instead, this returns [`Error::Os`] and the display keeps the size macOS chose, which
+    /// [`list_displays`] reports.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
+        self.0.resize(width, height)
     }
 }
 

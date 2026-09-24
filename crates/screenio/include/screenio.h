@@ -38,6 +38,7 @@ extern "C" {
 
 typedef struct sio_capture_t sio_capture_t;
 typedef struct sio_input_t sio_input_t;
+typedef struct sio_virtual_display_t sio_virtual_display_t;
 
 typedef struct sio_display_t {
     uint32_t id;
@@ -46,6 +47,7 @@ typedef struct sio_display_t {
     float scale;             /* captured pixels per coordinate unit */
     uint8_t primary;
     char name[64];
+    uint8_t placeholder;     /* 1 for the stand-in display macOS keeps when no screen is attached */
 } sio_display_t;
 
 typedef struct sio_frame_t {
@@ -74,6 +76,16 @@ uint32_t    sio_version(void);
 const char *sio_strerror(int err);
 
 int  sio_display_list(sio_display_t *out, uint32_t cap, uint32_t *count);
+
+/* A display that exists only in software (macOS: private CGVirtualDisplay, checked at run time).
+ * On a Mac without a screen it replaces the placeholder and becomes the desktop. Sizes are pixels
+ * at 1x; resize waits until the display shows the size, and returns SIO_E_OS when macOS settles
+ * on another size (3840x2160 ends at 1920x1080), leaving the display at that size. */
+int      sio_virtual_display_supported(void);   /* 1 or 0 */
+int      sio_virtual_display_create(const char *name, uint32_t width, uint32_t height, sio_virtual_display_t **out);
+uint32_t sio_virtual_display_id(const sio_virtual_display_t *display);
+int      sio_virtual_display_resize(sio_virtual_display_t *display, uint32_t width, uint32_t height);
+void     sio_virtual_display_destroy(sio_virtual_display_t *display);
 
 int  sio_capture_open(uint32_t display_id, sio_capture_t **out);
 int  sio_capture_open_scaled(uint32_t display_id, uint32_t width, uint32_t height, sio_capture_t **out);

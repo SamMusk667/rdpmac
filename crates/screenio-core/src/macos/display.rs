@@ -1,6 +1,10 @@
 use crate::{DisplayInfo, Error, Result};
 use core_graphics::display::CGDisplay;
 
+/// Vendor and model macOS gives the placeholder display of a Mac without a screen: "unkn",
+/// "virt".
+const PLACEHOLDER: (u32, u32) = (0x756e_6b6e, 0x7669_7274);
+
 /// Pixel size of a display from its current mode, falling back to its point size.
 pub fn pixel_size(display: &CGDisplay) -> (u32, u32) {
     let bounds = display.bounds();
@@ -52,6 +56,7 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
                 scale,
                 primary: display.is_main(),
                 name: format!("Display {id}"),
+                placeholder: (display.vendor_number(), display.model_number()) == PLACEHOLDER,
             }
         })
         .collect())

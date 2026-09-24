@@ -48,6 +48,8 @@ pub struct sio_display_t {
     pub scale: f32,
     pub primary: u8,
     pub name: [c_char; 64],
+    /// 1 for the stand-in display macOS keeps when no screen is attached.
+    pub placeholder: u8,
 }
 
 #[repr(C)]
@@ -82,6 +84,7 @@ pub struct sio_session_info_t {
 }
 
 pub struct sio_capture_t(sio::Capturer);
+pub struct sio_virtual_display_t(sio::VirtualDisplay);
 pub struct sio_input_t(sio::Input);
 
 fn copy_cstr(dst: &mut [c_char], src: &str) {
@@ -95,7 +98,7 @@ fn copy_cstr(dst: &mut [c_char], src: &str) {
 
 #[no_mangle]
 pub extern "C" fn sio_version() -> u32 {
-    0x00_01_00
+    0x00_02_00
 }
 
 #[no_mangle]
@@ -140,9 +143,73 @@ pub unsafe extern "C" fn sio_display_list(
             slot.scale = d.scale;
             slot.primary = d.primary as u8;
             copy_cstr(&mut slot.name, &d.name);
+            slot.placeholder = d.placeholder as u8;
         }
         SIO_OK
     })
+}
+
+/// 1 when this system can create virtual displays, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn sio_virtual_display_supported() -> i32 {
+    guard(|| sio::VirtualDisplay::is_supported() as i32)
+}
+
+/// Creates a virtual display of `width` x `height` pixels named `name` (UTF-8).
+#[no_mangle]
+pub unsafe extern "C" fn sio_virtual_display_create(
+    name: *const c_char,
+    width: u32,
+    height: u32,
+    out: *mut *mut sio_virtual_display_t,
+) -> i32 {
+    if name.is_null() || out.is_null() {
+        return SIO_E_INVALID;
+    }
+    guard(|| {
+        let Ok(name) = std::ffi::CStr::from_ptr(name).to_str() else {
+            return SIO_E_INVALID;
+        };
+        match sio::VirtualDisplay::create(name, width, height) {
+            Ok(d) => {
+                *out = Box::into_raw(Box::new(sio_virtual_display_t(d)));
+                SIO_OK
+            }
+            Err(e) => code(e),
+        }
+    })
+}
+
+/// The display id for `sio_display_list` and `sio_capture_open`; 0 for a null handle.
+#[no_mangle]
+pub unsafe extern "C" fn sio_virtual_display_id(display: *const sio_virtual_display_t) -> u32 {
+    if display.is_null() {
+        return 0;
+    }
+    (*display).0.id()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn sio_virtual_display_resize(
+    display: *mut sio_virtual_display_t,
+    width: u32,
+    height: u32,
+) -> i32 {
+    if display.is_null() {
+        return SIO_E_INVALID;
+    }
+    guard(|| match (*display).0.resize(width, height) {
+        Ok(()) => SIO_OK,
+        Err(e) => code(e),
+    })
+}
+
+/// Removes the display.
+#[no_mangle]
+pub unsafe extern "C" fn sio_virtual_display_destroy(display: *mut sio_virtual_display_t) {
+    if !display.is_null() {
+        drop(Box::from_raw(display));
+    }
 }
 
 #[no_mangle]

@@ -9,6 +9,26 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
     Err(Error::Unsupported)
 }
 
+pub struct VirtualDisplay;
+
+impl VirtualDisplay {
+    pub fn is_supported() -> bool {
+        false
+    }
+
+    pub fn create(_name: &str, _width: u32, _height: u32) -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn id(&self) -> u32 {
+        0
+    }
+
+    pub fn resize(&mut self, _width: u32, _height: u32) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+}
+
 pub struct Capturer;
 
 impl Capturer {
