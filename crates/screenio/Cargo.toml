@@ -1,0 +1,13 @@
+[package]
+name = "screenio"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "C ABI for screenio-core, built as libscreenio (dylib, so, dll and static)"
+
+[lib]
+name = "screenio"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+screenio-core = { path = "../screenio-core" }

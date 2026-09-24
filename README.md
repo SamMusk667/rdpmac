@@ -1,0 +1,67 @@
+# libscreenio
+
+屏幕采集、光标状态、键鼠注入，一个尽量小的同步 API，附带 C ABI（`libscreenio.dylib` / `.a`）。
+目标是成为 RDP 服务端的采集与注入层。目前只有 macOS 有真实现，其他平台编译同一套接口并返回
+`SIO_E_UNSUPPORTED`。
+
+## 目录
+
+```
+rustdesk/                 子模块 bitworker20/rustdesk：只读的参考实现，不参与编译
+crates/screenio-core/     公共 Rust API；src/macos 是 macOS 实现，src/stub.rs 是其他平台的接口桩
+crates/screenio/          C ABI，include/screenio.h，examples/c 是纯 C 的调用示例
+```
+
+## macOS 实现
+
+| 能力 | 用到的系统接口 | Rust 绑定 |
+|---|---|---|
+| 采集 | ScreenCaptureKit：`SCShareableContent`、`SCContentFilter`、`SCStream`，BGRA 帧 | `objc2-screen-capture-kit`、`objc2-core-media`、`objc2-core-video` |
+| 显示器枚举 | CoreGraphics：`CGGetActiveDisplayList`、`CGDisplayCopyDisplayMode` | `core-graphics` |
+| 光标 | `NSCursor.currentSystemCursor` 的位图与热点；`CGEventGetLocation` | `objc2-app-kit`、原生 extern |
+| 键鼠注入 | `CGEventCreateKeyboardEvent` / `CGEventCreateMouseEvent` / `CGEventCreateScrollWheelEvent`，HID 层投递 | `core-graphics` |
+| 权限 | `CGPreflightScreenCaptureAccess`、`AXIsProcessTrusted` | 原生 extern |
+
+不使用已被 Apple 弃用的 CGDisplayStream，不依赖旧的 `objc` 0.2 / `block` 0.1；对象模型走 `objc2` 0.6 生态
+（`objc2`、`block2`、`dispatch2` 及各框架绑定）。
+
+采集需要"屏幕录制"权限，键鼠注入需要"辅助功能"权限。两者都授予宿主进程（终端、IDE 或最终的服务程序），
+库只能查询（`sio_session_info`）和触发系统提示（`sio_session_request_permissions`）。光标位置和光标图像
+不需要权限。
+
+## 构建与运行
+
+```sh
+cargo build                                   # 得到 target/debug/libscreenio.{dylib,a}
+cargo run -p screenio-core --example screenshot [--request-permissions]
+sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screenshot
+```
+
+## 约定
+
+* 坐标是操作系统的虚拟桌面坐标；macOS 下是逻辑点，`sio_display_t.scale` 给出每个点对应的采集像素数。
+* 帧是 BGRA、行自上而下、带 stride；`data` 指针到下一次 `sio_capture_frame` 或 `sio_capture_close` 前有效。
+  `sio_capture_frame` 只在画面有变化时返回新帧，超时返回 `SIO_E_TIMEOUT`；采集流被系统停止（显示器断开等）
+  返回 `SIO_E_RESET`，此时应关闭并重新打开。
+* 键盘输入用 PC/AT set-1 扫描码加 E0/E1/释放标志，也就是 RDP 报文里的原样；另有 Unicode 事件。
+  修饰键状态由库自己维护并附在每个事件上。
+* 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。
+* 所有函数同步返回，`0` 成功，负数为 `SIO_E_*`。
+
+## 与 rustdesk 的关系
+
+rustdesk 子模块用于对照：macOS 的光标读取、扫描码到 virtual keycode 的映射、DXGI / X11 / PipeWire
+采集后端都可以从它那里参考或移植。macOS 侧 rustdesk 用的是 CGDisplayStream 加 enigo（objc 0.2），
+本项目没有直接编译它的源码。
+
+## 尚未做的
+
+* 帧的 dirty rect（ScreenCaptureKit 通过 `SCStreamFrameInfoDirtyRects` 提供，尚未透出）。
+* 键鼠注入的方向与修饰键行为需要在授予辅助功能权限后实机验证。
+* 锁定键同步（RDP 的 TS_SYNC_EVENT）与 Ctrl+Alt+Del。
+* 用 cbindgen 生成头文件（`cbindgen.toml` 已就位，目前头文件手写）。
+* Windows / Linux 后端。
+
+## 设计决策
+
+整个 RDP 服务端项目（rdpmac）的架构决策与里程碑计划见 `~/works/rdpmac/docs/adr/0001-macos-rdp-server-on-libscreenio-and-ironrdp.md`。

@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/screenio-core",
+    "crates/screenio",
+]
+# The rustdesk submodule is reference material, not a workspace member. Without this line Cargo
+# would adopt any path dependency found under it and fail with "member of the wrong workspace".
+exclude = ["rustdesk"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false

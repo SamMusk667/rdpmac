@@ -1,0 +1,129 @@
+//! PC/AT set-1 scancodes (what RDP carries) to macOS virtual keycodes.
+
+/// Returns the macOS virtual keycode for a set-1 scancode, or `None` for keys macOS lacks.
+pub fn set1_to_vkey(code: u16, extended: bool) -> Option<u16> {
+    let vk = if extended {
+        match code {
+            0x1C => 0x4C, // keypad Enter
+            0x1D => 0x3E, // right Control
+            0x35 => 0x4B, // keypad /
+            0x38 => 0x3D, // right Option
+            0x47 => 0x73, // Home
+            0x48 => 0x7E, // Up
+            0x49 => 0x74, // Page Up
+            0x4B => 0x7B, // Left
+            0x4D => 0x7C, // Right
+            0x4F => 0x77, // End
+            0x50 => 0x7D, // Down
+            0x51 => 0x79, // Page Down
+            0x52 => 0x72, // Insert -> Help
+            0x53 => 0x75, // Forward Delete
+            0x5B => 0x37, // left Win -> Command
+            0x5C => 0x36, // right Win -> right Command
+            _ => return None,
+        }
+    } else {
+        match code {
+            0x01 => 0x35, // Escape
+            0x02 => 0x12,
+            0x03 => 0x13,
+            0x04 => 0x14,
+            0x05 => 0x15,
+            0x06 => 0x17,
+            0x07 => 0x16,
+            0x08 => 0x1A,
+            0x09 => 0x1C,
+            0x0A => 0x19,
+            0x0B => 0x1D, // 1 .. 0
+            0x0C => 0x1B, // -
+            0x0D => 0x18, // =
+            0x0E => 0x33, // Backspace
+            0x0F => 0x30, // Tab
+            0x10 => 0x0C,
+            0x11 => 0x0D,
+            0x12 => 0x0E,
+            0x13 => 0x0F,
+            0x14 => 0x11,
+            0x15 => 0x10,
+            0x16 => 0x20,
+            0x17 => 0x22,
+            0x18 => 0x1F,
+            0x19 => 0x23, // Q .. P
+            0x1A => 0x21, // [
+            0x1B => 0x1E, // ]
+            0x1C => 0x24, // Return
+            0x1D => 0x3B, // left Control
+            0x1E => 0x00,
+            0x1F => 0x01,
+            0x20 => 0x02,
+            0x21 => 0x03,
+            0x22 => 0x05,
+            0x23 => 0x04,
+            0x24 => 0x26,
+            0x25 => 0x28,
+            0x26 => 0x25, // A .. L
+            0x27 => 0x29, // ;
+            0x28 => 0x27, // '
+            0x29 => 0x32, // `
+            0x2A => 0x38, // left Shift
+            0x2B => 0x2A, // backslash
+            0x2C => 0x06,
+            0x2D => 0x07,
+            0x2E => 0x08,
+            0x2F => 0x09,
+            0x30 => 0x0B,
+            0x31 => 0x2D,
+            0x32 => 0x2E, // Z .. M
+            0x33 => 0x2B, // ,
+            0x34 => 0x2F, // .
+            0x35 => 0x2C, // /
+            0x36 => 0x3C, // right Shift
+            0x37 => 0x43, // keypad *
+            0x38 => 0x3A, // left Option
+            0x39 => 0x31, // Space
+            0x3A => 0x39, // Caps Lock
+            0x3B => 0x7A,
+            0x3C => 0x78,
+            0x3D => 0x63,
+            0x3E => 0x76,
+            0x3F => 0x60,
+            0x40 => 0x61,
+            0x41 => 0x62,
+            0x42 => 0x64,
+            0x43 => 0x65,
+            0x44 => 0x6D, // F1 .. F10
+            0x45 => 0x47, // Num Lock -> keypad Clear
+            0x47 => 0x59,
+            0x48 => 0x5B,
+            0x49 => 0x5C, // keypad 7 8 9
+            0x4A => 0x4E, // keypad -
+            0x4B => 0x56,
+            0x4C => 0x57,
+            0x4D => 0x58, // keypad 4 5 6
+            0x4E => 0x45, // keypad +
+            0x4F => 0x53,
+            0x50 => 0x54,
+            0x51 => 0x55, // keypad 1 2 3
+            0x52 => 0x52, // keypad 0
+            0x53 => 0x41, // keypad .
+            0x56 => 0x0A, // ISO section key
+            0x57 => 0x67, // F11
+            0x58 => 0x6F, // F12
+            _ => return None,
+        }
+    };
+    Some(vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set1_to_vkey;
+
+    #[test]
+    fn letters_and_navigation_map() {
+        assert_eq!(set1_to_vkey(0x1E, false), Some(0x00)); // A
+        assert_eq!(set1_to_vkey(0x48, true), Some(0x7E)); // Up
+        assert_eq!(set1_to_vkey(0x48, false), Some(0x5B)); // keypad 8
+        assert_eq!(set1_to_vkey(0x5D, true), None); // Menu key
+    }
+}

@@ -1,0 +1,12 @@
+language = "C"
+include_guard = "SCREENIO_H"
+cpp_compat = true
+style = "both"
+
+[export]
+prefix = ""
+include = ["sio_display_t", "sio_frame_t", "sio_cursor_shape_t", "sio_session_info_t"]
+
+[export.rename]
+"sio_capture_t" = "sio_capture_t"
+"sio_input_t" = "sio_input_t"
