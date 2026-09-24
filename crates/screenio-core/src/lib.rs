@@ -270,6 +270,21 @@ pub fn session_info() -> SessionInfo {
     platform::session_info()
 }
 
+/// A pane of the system's privacy settings where the user grants what this library needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivacyPane {
+    /// Screen recording, which [`Capturer`] needs.
+    ScreenRecording,
+    /// Accessibility, which [`Input`] needs.
+    Accessibility,
+}
+
+/// Opens the pane where the user switches a permission on. [`request_permissions`] puts the
+/// process into both lists; this shows the user where they are.
+pub fn open_privacy_settings(pane: PrivacyPane) -> Result<()> {
+    platform::open_privacy_settings(pane)
+}
+
 /// Triggers the OS permission prompts where the platform has them, then reports the state.
 pub fn request_permissions() -> SessionInfo {
     platform::request_permissions()

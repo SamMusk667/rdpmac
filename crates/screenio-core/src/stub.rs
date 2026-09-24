@@ -1,7 +1,8 @@
 //! Interface-only implementation for platforms that have no backend yet.
 
 use crate::{
-    CursorPosition, CursorShape, DisplayInfo, Error, Frame, MouseButton, Result, SessionInfo,
+    CursorPosition, CursorShape, DisplayInfo, Error, Frame, MouseButton, PrivacyPane, Result,
+    SessionInfo,
 };
 use std::time::Duration;
 
@@ -115,4 +116,8 @@ pub fn session_info() -> SessionInfo {
 
 pub fn request_permissions() -> SessionInfo {
     session_info()
+}
+
+pub fn open_privacy_settings(_pane: PrivacyPane) -> Result<()> {
+    Err(Error::Unsupported)
 }

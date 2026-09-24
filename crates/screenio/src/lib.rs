@@ -1,9 +1,11 @@
 #![allow(non_camel_case_types)]
+// Every function has the same contract, the C one: each pointer is null or valid for the call.
+#![allow(clippy::missing_safety_doc)]
 //! C ABI over `screenio-core`. Every function is synchronous, returns `0` on success or a
 //! negative `SIO_E_*` code, and never unwinds across the boundary.
 //!
-//! The header `include/screenio.h` mirrors this file by hand for now; `cbindgen.toml` is in
-//! place for generating it once the surface settles.
+//! `include/screenio.h` is generated from this file by `scripts/header.sh` (cbindgen), so the
+//! doc comments here are the header's comments.
 
 use screenio_core as sio;
 use std::{
@@ -13,15 +15,46 @@ use std::{
 };
 
 pub const SIO_OK: i32 = 0;
+/// No new frame within the timeout.
 pub const SIO_E_TIMEOUT: i32 = -1;
+/// The capture target changed; reopen the capturer.
 pub const SIO_E_RESET: i32 = -2;
+/// A missing OS permission.
 pub const SIO_E_PERMISSION: i32 = -3;
+/// Not implemented on this platform.
 pub const SIO_E_UNSUPPORTED: i32 = -4;
+/// A bad argument.
 pub const SIO_E_INVALID: i32 = -5;
+/// An OS call failed.
 pub const SIO_E_OS: i32 = -6;
+/// An internal error.
 pub const SIO_E_PANIC: i32 = -7;
 
 pub const SIO_FORMAT_BGRA: u32 = 0;
+
+/// Flags for `sio_input_key_scancode`: an E0-prefixed scancode.
+pub const SIO_KEY_EXTENDED: u32 = 1;
+/// An E1-prefixed scancode.
+pub const SIO_KEY_EXTENDED1: u32 = 2;
+/// A key release; without it the event is a press.
+pub const SIO_KEY_RELEASE: u32 = 4;
+
+/// Lock key flags for `sio_input_sync_locks`, as in RDP's TS_SYNC_EVENT.
+pub const SIO_LOCK_SCROLL: u32 = 1;
+pub const SIO_LOCK_NUM: u32 = 2;
+pub const SIO_LOCK_CAPS: u32 = 4;
+pub const SIO_LOCK_KANA: u32 = 8;
+
+/// Buttons for `sio_input_mouse_button`.
+pub const SIO_BUTTON_LEFT: u32 = 0;
+pub const SIO_BUTTON_RIGHT: u32 = 1;
+pub const SIO_BUTTON_MIDDLE: u32 = 2;
+pub const SIO_BUTTON_X1: u32 = 3;
+pub const SIO_BUTTON_X2: u32 = 4;
+
+/// Panes for `sio_open_privacy_settings`.
+pub const SIO_PANE_SCREEN_RECORDING: u32 = 0;
+pub const SIO_PANE_ACCESSIBILITY: u32 = 1;
 
 fn code(e: sio::Error) -> i32 {
     match e {
@@ -41,10 +74,13 @@ fn guard(f: impl FnOnce() -> i32) -> i32 {
 #[repr(C)]
 pub struct sio_display_t {
     pub id: u32,
+    /// Origin in virtual-desktop coordinates.
     pub x: i32,
     pub y: i32,
+    /// Size in captured pixels.
     pub width: u32,
     pub height: u32,
+    /// Captured pixels per coordinate unit.
     pub scale: f32,
     pub primary: u8,
     pub name: [c_char; 64],
@@ -58,18 +94,21 @@ pub struct sio_frame_t {
     pub data: *const u8,
     pub width: u32,
     pub height: u32,
+    /// Bytes per row.
     pub stride: u32,
+    /// `SIO_FORMAT_*`.
     pub format: u32,
 }
 
 #[repr(C)]
 pub struct sio_cursor_shape_t {
+    /// Changes whenever the shape changes.
     pub id: u64,
     pub width: u32,
     pub height: u32,
     pub hot_x: i32,
     pub hot_y: i32,
-    /// Owned by the library; release with `sio_cursor_shape_free`.
+    /// `width * height * 4` bytes, owned by the library; release with `sio_cursor_shape_free`.
     pub rgba: *mut u8,
     pub rgba_len: usize,
     /// Bitmap pixels per point.
@@ -96,9 +135,10 @@ fn copy_cstr(dst: &mut [c_char], src: &str) {
     dst[n] = 0;
 }
 
+/// The library version as 0xMMmmpp: 0x010000 is 1.0.0.
 #[no_mangle]
 pub extern "C" fn sio_version() -> u32 {
-    0x00_02_00
+    0x01_00_00
 }
 
 #[no_mangle]
@@ -155,7 +195,9 @@ pub extern "C" fn sio_virtual_display_supported() -> i32 {
     guard(|| sio::VirtualDisplay::is_supported() as i32)
 }
 
-/// Creates a virtual display of `width` x `height` pixels named `name` (UTF-8).
+/// Creates a display that exists only in software (macOS: the private CGVirtualDisplay API,
+/// checked at run time), `width` x `height` pixels at 1x, named `name` (UTF-8). On a Mac without
+/// a screen it replaces the placeholder and becomes the desktop.
 #[no_mangle]
 pub unsafe extern "C" fn sio_virtual_display_create(
     name: *const c_char,
@@ -189,6 +231,8 @@ pub unsafe extern "C" fn sio_virtual_display_id(display: *const sio_virtual_disp
     (*display).0.id()
 }
 
+/// Waits until the display shows the new size. Returns `SIO_E_OS` when macOS settles on another
+/// size instead (3840x2160 ends at 1920x1080); the display then keeps that size.
 #[no_mangle]
 pub unsafe extern "C" fn sio_virtual_display_resize(
     display: *mut sio_virtual_display_t,
@@ -204,7 +248,7 @@ pub unsafe extern "C" fn sio_virtual_display_resize(
     })
 }
 
-/// Removes the display.
+/// Removes the display; on a Mac without a screen the placeholder comes back.
 #[no_mangle]
 pub unsafe extern "C" fn sio_virtual_display_destroy(display: *mut sio_virtual_display_t) {
     if !display.is_null() {
@@ -246,6 +290,8 @@ pub unsafe extern "C" fn sio_capture_open_scaled(
     })
 }
 
+/// Waits up to `timeout_ms` for a frame that differs from the last one returned. `SIO_E_RESET`
+/// means the capture stream stopped (display change and the like): close and reopen.
 #[no_mangle]
 pub unsafe extern "C" fn sio_capture_frame(
     cap: *mut sio_capture_t,
@@ -370,29 +416,30 @@ pub unsafe extern "C" fn sio_input_mouse_move_rel(input: *mut sio_input_t, dx: i
     with_input(input, |i| i.mouse_move_rel(dx, dy))
 }
 
-/// `button`: 0 left, 1 right, 2 middle, 3 X1, 4 X2.
+/// `button` is one of `SIO_BUTTON_*`.
 #[no_mangle]
 pub unsafe extern "C" fn sio_input_mouse_button(input: *mut sio_input_t, button: u32, down: u8) -> i32 {
     let button = match button {
-        0 => sio::MouseButton::Left,
-        1 => sio::MouseButton::Right,
-        2 => sio::MouseButton::Middle,
-        3 => sio::MouseButton::X1,
-        4 => sio::MouseButton::X2,
+        SIO_BUTTON_LEFT => sio::MouseButton::Left,
+        SIO_BUTTON_RIGHT => sio::MouseButton::Right,
+        SIO_BUTTON_MIDDLE => sio::MouseButton::Middle,
+        SIO_BUTTON_X1 => sio::MouseButton::X1,
+        SIO_BUTTON_X2 => sio::MouseButton::X2,
         _ => return SIO_E_INVALID,
     };
     with_input(input, |i| i.mouse_button(button, down != 0))
 }
 
+/// 120 per notch; positive is up or right.
 #[no_mangle]
 pub unsafe extern "C" fn sio_input_mouse_wheel(input: *mut sio_input_t, dx: i32, dy: i32) -> i32 {
     with_input(input, |i| i.mouse_wheel(dx, dy))
 }
 
-/// `flags`: bit 0 extended (E0), bit 1 extended1 (E1), bit 2 release.
+/// A set-1 scancode; `flags` combines `SIO_KEY_*`.
 #[no_mangle]
-pub unsafe extern "C" fn sio_input_key_scancode(input: *mut sio_input_t, code: u16, flags: u32) -> i32 {
-    with_input(input, |i| i.key_scancode(code, flags))
+pub unsafe extern "C" fn sio_input_key_scancode(input: *mut sio_input_t, set1_code: u16, flags: u32) -> i32 {
+    with_input(input, |i| i.key_scancode(set1_code, flags))
 }
 
 #[no_mangle]
@@ -400,10 +447,10 @@ pub unsafe extern "C" fn sio_input_key_unicode(input: *mut sio_input_t, codepoin
     with_input(input, |i| i.key_unicode(codepoint, down != 0))
 }
 
-/// `flags`: SIO_LOCK_* bits describing the client's lock key state.
+/// `lock_flags` combines `SIO_LOCK_*` for the lock keys that should be on.
 #[no_mangle]
-pub unsafe extern "C" fn sio_input_sync_locks(input: *mut sio_input_t, flags: u32) -> i32 {
-    with_input(input, |i| i.sync_locks(flags))
+pub unsafe extern "C" fn sio_input_sync_locks(input: *mut sio_input_t, lock_flags: u32) -> i32 {
+    with_input(input, |i| i.sync_locks(lock_flags))
 }
 
 #[no_mangle]
@@ -444,5 +491,19 @@ pub unsafe extern "C" fn sio_session_request_permissions(out: *mut sio_session_i
             copy_cstr(&mut slot.backend, s.backend);
         }
         SIO_OK
+    })
+}
+
+/// Opens the System Settings pane where the user switches a permission on.
+#[no_mangle]
+pub extern "C" fn sio_open_privacy_settings(pane: u32) -> i32 {
+    let pane = match pane {
+        SIO_PANE_SCREEN_RECORDING => sio::PrivacyPane::ScreenRecording,
+        SIO_PANE_ACCESSIBILITY => sio::PrivacyPane::Accessibility,
+        _ => return SIO_E_INVALID,
+    };
+    guard(|| match sio::open_privacy_settings(pane) {
+        Ok(()) => SIO_OK,
+        Err(e) => code(e),
     })
 }

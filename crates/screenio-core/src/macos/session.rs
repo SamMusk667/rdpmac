@@ -1,6 +1,9 @@
 use std::ffi::c_void;
 
-use crate::SessionInfo;
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSString, NSURL};
+
+use crate::{Error, PrivacyPane, Result, SessionInfo};
 
 #[link(name = "CoreGraphics", kind = "framework")]
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -20,6 +23,20 @@ pub fn session_info() -> SessionInfo {
         backend: "macos-screencapturekit",
         can_capture: can_capture(),
         can_inject: unsafe { AXIsProcessTrusted() },
+    }
+}
+
+pub fn open_privacy_settings(pane: PrivacyPane) -> Result<()> {
+    let anchor = match pane {
+        PrivacyPane::ScreenRecording => "Privacy_ScreenCapture",
+        PrivacyPane::Accessibility => "Privacy_Accessibility",
+    };
+    let link = NSString::from_str(&format!("x-apple.systempreferences:com.apple.preference.security?{anchor}"));
+    let url = NSURL::URLWithString(&link).ok_or(Error::Os)?;
+    if NSWorkspace::sharedWorkspace().openURL(&url) {
+        Ok(())
+    } else {
+        Err(Error::Os)
     }
 }
 

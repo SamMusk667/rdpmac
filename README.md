@@ -53,8 +53,22 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   尺寸为 1x 像素。不接显示器的 Mac 上它替代系统的占位显示器（`placeholder` 为真的那块）成为桌面，释放后占位显示器
   以新的 id 回来。macOS 26 会把 3840x2160 定成 1920x1080，这时 `resize` 返回错误，显示器保留系统选定的尺寸。
 * 光标形状带 `scale`，即位图像素与点之比，调用方按会话缩放光标时用它。
+* 权限引导：`open_privacy_settings`（C 接口 `sio_open_privacy_settings`）打开"隐私与安全性"里屏幕录制或辅助功能那一页；
+  `request_permissions` 负责把进程加进这两个列表。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。
 * 所有函数同步返回，`0` 成功，负数为 `SIO_E_*`。
+
+## C ABI
+
+`crates/screenio/include/screenio.h` 由 cbindgen 从 `crates/screenio/src/lib.rs` 生成，头文件里的注释就是那里的文档注释。
+改了 C 接口后运行 `sh scripts/header.sh`，`sh scripts/header.sh --verify` 只检查头文件是否最新；需要先 `cargo install cbindgen`。
+
+C ABI 从 1.0（`sio_version()` 返回 `0x010000`）起冻结，1.x 只做增量：
+
+* 已有的函数、常量、类型名、参数和含义不变。
+* 结构体的大小和字段布局不变：调用方按 `sizeof` 分配数组（例如给 `sio_display_list`），加字段会破坏它们。新的数据通过新函数给出。
+* 新能力以新函数和新常量加入，次版本号随之增加。
+* 可能出现新的负数错误码，调用方应把不认识的负数当作失败处理。
 
 ## 与 rustdesk 的关系
 
@@ -66,8 +80,7 @@ rustdesk 子模块用于对照：macOS 的光标读取、扫描码到 virtual ke
 
 * 帧的 dirty rect（ScreenCaptureKit 通过 `SCStreamFrameInfoDirtyRects` 提供，尚未透出）。
 * 键鼠注入的方向与修饰键行为需要在授予辅助功能权限后实机验证。
-* 锁定键同步（RDP 的 TS_SYNC_EVENT）与 Ctrl+Alt+Del。
-* 用 cbindgen 生成头文件（`cbindgen.toml` 已就位，目前头文件手写）。
+* Ctrl+Alt+Del。
 * 虚拟显示器的 HiDPI 模式：显式切换模式会让系统忽略之后的设置，需要另找办法。
 * Windows / Linux 后端。
 
