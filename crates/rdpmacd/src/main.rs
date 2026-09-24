@@ -16,7 +16,7 @@ use rdpmac_session::monitor::{FixedMonitor, MonitorPolicy, PrimaryMonitor};
 use rdpmac_session::Geometry;
 use tracing::{info, warn};
 
-use crate::config::{Args, AuthMode, Codec, Resolution};
+use crate::config::{Args, AuthMode, Codec, Resolution, VirtualDisplay};
 
 fn init_logging() -> anyhow::Result<()> {
     use std::io::IsTerminal;
@@ -158,6 +158,18 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(?mode, "session resolution");
     let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz);
+    // A display of its own only replaces the primary display; a chosen display is served as is.
+    let own_display = args.virtual_display == VirtualDisplay::Auto
+        && mode == ResolutionMode::FollowClient
+        && args.test_pattern.is_none()
+        && args.display.is_none();
+    let display_handler = match own_display.then(rdpmac_session::virtual_screen::VirtualScreen::new).flatten() {
+        Some(screen) => {
+            info!("sessions get a display of their own when no screen is attached");
+            display_handler.with_virtual_screen(screen)
+        }
+        None => display_handler,
+    };
     let gfx = (args.codec == Codec::Auto).then(rdpmac_session::gfx::GfxLink::new);
     let display_handler = match &gfx {
         Some(link) => display_handler.with_gfx(link.clone()),

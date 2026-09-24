@@ -12,6 +12,7 @@ pub mod gfx;
 pub mod input;
 pub mod monitor;
 pub mod pattern;
+pub mod virtual_screen;
 
 use std::sync::{Arc, Mutex};
 
@@ -151,6 +152,7 @@ mod tests {
             scale: 2.0,
             primary: true,
             name: String::new(),
+            placeholder: false,
         }
     }
 

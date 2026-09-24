@@ -21,6 +21,15 @@ pub enum Resolution {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum VirtualDisplay {
+    /// On a Mac without a screen attached, a session following the client gets its own display
+    /// at the client's size instead of a scaled picture.
+    Auto,
+    /// Never create a display; scale the existing one.
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Codec {
     /// H.264 through the graphics pipeline when the client supports it, RemoteFX otherwise.
     Auto,
@@ -58,6 +67,10 @@ pub struct Args {
     /// How the session resolution is chosen.
     #[arg(long, value_enum, default_value_t = Resolution::FollowClient)]
     pub resolution: Resolution,
+
+    /// Whether sessions that follow the client may get a display of their own.
+    #[arg(long, value_enum, default_value_t = VirtualDisplay::Auto)]
+    pub virtual_display: VirtualDisplay,
 
     #[arg(long, value_enum, default_value_t = AuthMode::Pam)]
     pub auth: AuthMode,

@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 use crate::cursor::{position_update, PointerCache};
 use crate::monitor::MonitorPolicy;
 use crate::pattern::TestPattern;
+use crate::virtual_screen::{StreamGuard, VirtualScreen};
 use crate::{current, store, Geometry, Rect, SharedGeometry};
 
 const CHANNEL_DEPTH: usize = 4;
@@ -115,6 +116,7 @@ pub struct DisplayHandler {
     cursor_hz: u32,
     #[cfg(target_os = "macos")]
     gfx: Option<Arc<crate::gfx::GfxLink>>,
+    virtual_screen: Option<Arc<VirtualScreen>>,
 }
 
 impl DisplayHandler {
@@ -136,7 +138,15 @@ impl DisplayHandler {
             cursor_hz: cursor_hz.clamp(1, 120),
             #[cfg(target_os = "macos")]
             gfx: None,
+            virtual_screen: None,
         }
+    }
+
+    /// Serves sessions that follow the client from a virtual display at the client's size when
+    /// no screen is attached.
+    pub fn with_virtual_screen(mut self, screen: Arc<VirtualScreen>) -> Self {
+        self.virtual_screen = Some(screen);
+        self
     }
 
     /// Sends frames as H.264 through the graphics pipeline when the client negotiates it.
@@ -202,6 +212,13 @@ impl RdpServerDisplay for DisplayHandler {
             let requested = (u32::from(client_size.width), u32::from(client_size.height));
             info!(width = requested.0, height = requested.1, "session size follows the client");
             *lock(&self.session.requested) = Some(requested);
+            // Called after the credentials passed, and again at the new size after a resize.
+            if let (Some(screen), FrameSource::Screen) = (self.virtual_screen.clone(), self.source) {
+                let prepared = tokio::task::spawn_blocking(move || screen.prepare(requested.0, requested.1)).await;
+                if let Err(e) = prepared {
+                    warn!(%e, "preparing the virtual display failed");
+                }
+            }
         }
         self.size().await
     }
@@ -256,13 +273,18 @@ impl RdpServerDisplay for DisplayHandler {
             .spawn(move || cursor.cursor_loop(hz))
             .context("spawning the cursor thread")?;
         info!(width = geometry.width, height = geometry.height, "session picture");
-        Ok(Box::new(Updates { rx, stop }))
+        Ok(Box::new(Updates {
+            rx,
+            stop,
+            _virtual_screen: self.virtual_screen.as_ref().map(VirtualScreen::stream),
+        }))
     }
 }
 
 struct Updates {
     rx: Receiver<DisplayUpdate>,
     stop: Arc<AtomicBool>,
+    _virtual_screen: Option<StreamGuard>,
 }
 
 #[async_trait]
