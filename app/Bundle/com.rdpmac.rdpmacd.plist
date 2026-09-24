@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.rdpmac.rdpmacd</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/rdpmacd</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.rdpmac.app</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>RDPMAC_LOG</key>
+		<string>info</string>
+		<key>RDPMAC_LOG_DIR</key>
+		<string>~/Library/Logs/rdpmac</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+</dict>
+</plist>

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs as root once the installer has copied rdpmac.app. A running server restarts on the new
+# binary, and the app opens for the user at the screen so the welcome window can guide them.
+app="${2:-/Applications}/rdpmac.app"
+user=$(stat -f %Su /dev/console)
+[ -n "$user" ] && [ "$user" != "root" ] || exit 0
+uid=$(id -u "$user")
+if launchctl print "gui/$uid/com.rdpmac.rdpmacd" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/$uid/com.rdpmac.rdpmacd" || true
+fi
+launchctl asuser "$uid" sudo -u "$user" /usr/bin/open "$app" || true
+exit 0

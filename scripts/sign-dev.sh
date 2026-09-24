@@ -7,7 +7,8 @@
 # requirement, "identifier com.rdpmac.rdpmacd and certificate root = <hash>", and the grants stay.
 #
 #   sh scripts/sign-dev.sh setup          create the "rdpmac Development" identity, once per Mac
-#   sh scripts/sign-dev.sh sign [PATH]    sign PATH, default target/release/rdpmacd
+#   sh scripts/sign-dev.sh sign [PATH]    sign PATH, default target/release/rdpmacd; an app bundle
+#                                         keeps the identifier from its Info.plist
 #   sh scripts/sign-dev.sh status [PATH]  show the identity and PATH's signature
 #
 # The identity lives in its own keychain, unlocked with a password stored next to it and readable
@@ -142,10 +143,15 @@ EOF
 
 sign() {
     bin="${1:-$root/target/release/rdpmacd}"
-    [ -f "$bin" ] || die "no such file: $bin (build it first)"
+    [ -e "$bin" ] || die "no such file: $bin (build it first)"
+    # A bare executable gets rdpmacd's identifier; a bundle's comes from its Info.plist.
+    if [ -d "$bin" ]; then
+        set -- --timestamp=none
+    else
+        set -- --identifier "$identifier" --timestamp=none
+    fi
     if [ -n "${RDPMAC_SIGN_IDENTITY:-}" ]; then
-        codesign --force --sign "$RDPMAC_SIGN_IDENTITY" --identifier "$identifier" \
-            --timestamp=none "$bin"
+        codesign --force --sign "$RDPMAC_SIGN_IDENTITY" "$@" "$bin"
     else
         [ -f "$keychain" ] || die "no signing identity yet; run: sh scripts/sign-dev.sh setup"
         hash=$(fingerprint)
@@ -158,8 +164,7 @@ sign() {
             trap 'exit 130' INT HUP TERM
             list_keychain
         fi
-        codesign --force --keychain "$keychain" --sign "$hash" --identifier "$identifier" \
-            --timestamp=none "$bin"
+        codesign --force --keychain "$keychain" --sign "$hash" "$@" "$bin"
     fi
     codesign --verify --strict "$bin"
     echo "signed $bin"
@@ -178,7 +183,7 @@ status() {
         echo "identity: none, run: sh scripts/sign-dev.sh setup"
     fi
     bin="${1:-$root/target/release/rdpmacd}"
-    if [ -f "$bin" ]; then
+    if [ -e "$bin" ]; then
         codesign -dv --verbose=2 "$bin" 2>&1 | grep -E '^(Identifier|Authority|Signature)='
         requirement "$bin"
     fi
@@ -195,7 +200,7 @@ status)
     status "$@"
     ;;
 *)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
