@@ -4,6 +4,10 @@
 //! encoders do the work. Milestone 2 adds dirty rectangles through [`region_update`] and a
 //! VideoToolbox H.264 path that feeds the graphics pipeline instead of this module.
 
+#[cfg(target_os = "macos")]
+pub mod h264;
+pub mod rate;
+
 use core::num::{NonZeroU16, NonZeroUsize};
 
 use bytes::Bytes;
@@ -13,6 +17,12 @@ use screenio_core::Frame;
 /// The whole frame as one update. Returns `None` for a frame RDP cannot describe.
 pub fn full_frame_update(frame: &Frame<'_>) -> Option<BitmapUpdate> {
     region_update(frame, 0, 0, frame.width, frame.height)
+}
+
+/// The frame as one update, cut to at most `max_width` x `max_height`. A capture pipeline may
+/// round the output size; the session size is what the client was promised.
+pub fn frame_update(frame: &Frame<'_>, max_width: u32, max_height: u32) -> Option<BitmapUpdate> {
+    region_update(frame, 0, 0, frame.width.min(max_width), frame.height.min(max_height))
 }
 
 /// A sub-rectangle of the frame, copied to a tightly packed buffer.

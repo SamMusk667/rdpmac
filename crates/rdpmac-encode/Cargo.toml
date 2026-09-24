@@ -11,3 +11,9 @@ description = "Turns captured frames into RDP display updates; VideoToolbox H.26
 screenio-core.workspace = true
 ironrdp-server.workspace = true
 bytes.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-video-toolbox = "0.3"

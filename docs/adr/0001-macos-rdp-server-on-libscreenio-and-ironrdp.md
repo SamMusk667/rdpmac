@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |---|---|
 | 状态 | 已接受（2026-09-23，项目负责人对第 11 节的问题给出答复后生效） |
-| 日期 | 2026-09-23，同日接受 |
+| 日期 | 2026-09-23，同日接受；2026-09-24 修订，新增 D8，见第 13 节 |
 | 决策范围 | rdpmac 项目的技术路线、架构、仓库与许可、里程碑 |
 | 输入 | `~/works/libscreenio` 原型；`~/works/rdp-baseline/baseline/2026-09-23-freerdp-macos.md`；IronRDP 源码核对（2026-09-23） |
 | 替代方案 | 见第 9 节：FreeRDP 混合架构；Swift/ObjC 从零实现 |
@@ -45,6 +45,8 @@
 **D3 编码分三步，不引入 OpenH264 或 FFmpeg。** 第一步 RemoteFX 加 RDP6 位图，全部由 IronRDP 现成编码器完成；
 第二步 VideoToolbox 硬编 H.264，经图形管线以 AVC420 发送；第三步 AVC444 双流拆分与 RemoteFX progressive。
 H.264 只用系统自带编码器，回避专利与 GPL 依赖。
+H.264 只用于不超过 4096x2304 的会话：Windows 的 Media Foundation H.264 解码器，也就是 mstsc 使用的解码器，
+上限是 4096x2304，而且 8K 时硬件编码器只有约 7 fps；更大的会话固定走 RemoteFX。
 
 **D4 认证与传输安全。** TLS 1.2 与 1.3 由 rustls 提供；证书首次运行自签名并存于配置目录，可替换为导入证书。
 第一阶段只开 TLS 安全层，凭据来自 ClientInfo，由 `CredentialValidator` 调 OpenDirectory 或 PAM 校验本地账号，
@@ -64,6 +66,22 @@ bundle identifier 的可执行文件，这样 TCC 授权在重新构建后仍然
 **D7 互操作与测试基线。** `rdp-baseline` 里已构建的 `sdl-freerdp` 和 `probe_x224.py` 作为自动化冒烟工具；
 mstsc、Windows App、Microsoft Remote Desktop for Mac、FreeRDP、IronRDP client 构成手工互操作矩阵；
 每个里程碑都要产出与 FreeRDP 基线同口径的数字。
+
+**D8 分辨率跟随客户端，三步走。** mstsc 等客户端请求的分辨率决定会话分辨率，不再依赖 BetterDisplay 之类的
+外部工具。依据是 2026-09-24 在开发机上的检查：不接显示器的 Mac mini 在没有 BetterDisplay 时只剩一块系统虚拟屏，
+只有 1920x1080 一种模式，切换分辨率无从谈起；BetterDisplay 运行时它的虚拟屏默认 7680x4320，客户端被迫接收 8K 画面。
+
+1. **跟随客户端分辨率（M2）。** 打开 IronRDP 的 `with_honor_client_desktop_size`，连接时采用客户端在 GCC Client Core
+   Data 里请求的宽高；实现 `request_layout`，mstsc 启用动态分辨率时拖动窗口会实时改会话分辨率。Mac 显示器给不出这个
+   尺寸时，由 ScreenCaptureKit 直接输出缩放到该尺寸的画面，宽高比不同时加黑边，鼠标坐标与光标大小同步换算。
+   会话中显示器被替换（例如开关 BetterDisplay 导致显示器编号变化）时按显示器策略重新选择，不需要重连。
+2. **rdpmac 自建虚拟显示器（M3，免费版）。** 通过私有接口 CGVirtualDisplay 按客户端请求的像素尺寸创建显示器，
+   会话中按新布局改模式，原生分辨率、不缩放，彻底去掉对 BetterDisplay 的依赖。私有接口做运行时检测，
+   不可用时退回第 1 步的缩放。单块虚拟显示器进免费版，因为不接显示器的 Mac mini 是最常见的部署形态。
+3. **物理显示器切换模式（M4）。** 接了显示器的 Mac 从显示器支持的模式里选最接近的，断开时恢复；默认关闭，
+   避免打扰本地用户。
+
+按 mstsc 多显示器创建多块虚拟显示器归入 Pro（M5），需要上游放开 IronRDP 显示控制通道的单显示器限制。
 
 ## 3. 架构
 
@@ -116,7 +134,8 @@ Windows / macOS / Linux RDP 客户端
 
 | IronRDP 扩展点 | libscreenio 或本项目实现 | 备注 |
 |---|---|---|
-| `RdpServerDisplay::size` | `list_displays()` 的主显示器像素尺寸 | 可选"逻辑分辨率"模式，以半分辨率服务低带宽客户端 |
+| `RdpServerDisplay::size` | 会话分辨率：跟随客户端时为客户端请求的尺寸，否则为显示器像素尺寸 | 命令行 `--resolution follow-client` 为默认 |
+| `RdpServerDisplay::request_initial_size` 与 `with_honor_client_desktop_size` | 采用客户端在握手中请求的宽高 | M2；0.13.0 只转交宽高，不含缩放比 |
 | `RdpServerDisplayUpdates::next_update` | `Capturer::frame` 加脏矩形 → `BitmapUpdate{x,y,w,h,BGRA,stride}` | 无变化不产出；`Reset` → `Resize` |
 | 光标更新 | `cursor_position` / `cursor_shape` → `PointerPosition`、`RGBAPointer`、`LargePointer`、`HidePointer` | 形状 id 作缓存键 |
 | `RdpServerInputHandler::keyboard` | `Input::key_scancode`、`key_unicode`、`sync_locks` | 扫描码模型一致，零转换 |
@@ -124,7 +143,7 @@ Windows / macOS / Linux RDP 客户端
 | `CredentialValidator::validate` | `rdpmac-auth` → OpenDirectory / PAM | TLS 模式 |
 | `GfxServerFactory` 与 `send_avc420_frame` 等 | `rdpmac-encode` 的 VideoToolbox 管线 | M2 起 |
 | `CliprdrServerFactory` | NSPasteboard 桥 | M2 文本，M4 图片与文件 |
-| `request_layout` | 显示模式切换或虚拟显示器 | M4 |
+| `request_layout` | 会话中改分辨率：M2 缩放输出，M3 改虚拟显示器模式，M4 物理显示器切模式 | 单显示器，面积上限略高于 4K，由 IronRDP 写死 |
 | 声音工厂 | ScreenCaptureKit 音频或 CoreAudio | M4 |
 
 ### 3.5 配置与数据
@@ -141,10 +160,10 @@ Windows / macOS / Linux RDP 客户端
 |---|---|---|---|
 | M0 已完成 | libscreenio 原型；FreeRDP 基线；IronRDP 能力核对 | 见输入文档 | 完成 |
 | M1 第一帧 | 服务端仓库骨架；IronRDP 接 libscreenio 的显示与输入；TLS 自签名；OpenDirectory 密码校验；RemoteFX；光标形状与位置；`release_all`；日志 | mstsc 与 Windows App 能连上并操作主显示器；本机 1080p 逻辑分辨率下 RemoteFX 稳定 30 fps；键盘含修饰键、鼠标含滚轮与拖拽在 Finder、终端、浏览器里正确 | 4 到 6 周 |
-| M2 Retina 与体验 | libscreenio 脏矩形与 `Reset`；VideoToolbox H.264 → AVC420；帧确认背压与网络探测接入；显示器变化重建；剪贴板文本；相对鼠标 | 5K 原生分辨率 30 fps 时守护进程 CPU 低于一颗核心的 60%；局域网端到端输入延迟低于 50 ms；拔插显示器不掉线 | 3 到 4 周 |
-| M3 产品外壳 | Swift 菜单栏 App；LaunchAgent 安装与卸载；权限引导；证书导入；设置界面；签名与公证；pkg 安装器；崩溃与日志收集 | 全新 Mac 上从安装到首次远程连接不需要终端；重新构建后权限不丢；公证通过 | 3 到 4 周 |
-| M4 企业能力 | NLA 两种模式（凭据库、Kerberos）；AVC444 与 progressive；显示控制接口；声音；剪贴板图片与文件；MDM 托管配置；审计与会话录制接口；登录窗口会话调研 | 域账号与独立账号都能走 NLA；企业安全问卷可回答 | 8 到 12 周 |
-| M5 Pro 与商业化 | 许可证与激活；更新通道；可选遥测；Pro crate 接入；多显示器实现（接口在 M1 起保留） | 免费版与 Pro 版从同一代码库构建 | 按业务排期 |
+| M2 Retina 与体验 | 分辨率跟随客户端（D8 第 1 步）；显示器被替换时重新选择；libscreenio 脏矩形与 `Reset`；VideoToolbox H.264 → AVC420；帧确认背压与网络探测接入；显示器变化重建；剪贴板文本；相对鼠标 | 5K 原生分辨率 30 fps 时守护进程 CPU 低于一颗核心的 60%；局域网端到端输入延迟低于 50 ms；拔插显示器不掉线 | 3 到 4 周 |
+| M3 产品外壳 | rdpmac 自建虚拟显示器（D8 第 2 步）；Swift 菜单栏 App；LaunchAgent 安装与卸载；权限引导；证书导入；设置界面；签名与公证；pkg 安装器；崩溃与日志收集 | 全新 Mac 上从安装到首次远程连接不需要终端；重新构建后权限不丢；公证通过 | 3 到 4 周 |
+| M4 企业能力 | NLA 两种模式（凭据库、Kerberos）；AVC444 与 progressive；物理显示器切换模式（D8 第 3 步，默认关闭）；声音；剪贴板图片与文件；MDM 托管配置；审计与会话录制接口；登录窗口会话调研 | 域账号与独立账号都能走 NLA；企业安全问卷可回答 | 8 到 12 周 |
+| M5 Pro 与商业化 | 许可证与激活；更新通道；可选遥测；Pro crate 接入；多显示器实现（接口在 M1 起保留），按 mstsc 多显示器创建多块虚拟显示器 | 免费版与 Pro 版从同一代码库构建 | 按业务排期 |
 
 M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 
@@ -157,7 +176,10 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 - M2：透出 `SCStreamFrameInfoDirtyRects` 的脏矩形；帧时间戳；`CGDisplayRegisterReconfigurationCallback` 触发
   `Reset` 与显示器变化通知；为 VideoToolbox 提供不经 CPU 拷贝的 `CVPixelBuffer` 帧句柄，与现有 BGRA 拷贝路径并存；
   光标形状按客户端能力选择 1x 或 2x 位图。
-- M3：`open_privacy_settings` 之类的权限引导辅助；cbindgen 生成头文件并冻结 1.0 的 C ABI。
+- M2 补充：`Capturer::open_scaled` 让 ScreenCaptureKit 按指定尺寸输出；`CursorShape` 报告位图的像素与点之比，
+  供服务端按会话缩放光标。
+- M3：`VirtualDisplay`，基于 CGVirtualDisplay，运行时检测可用性；`open_privacy_settings` 之类的权限引导辅助；
+  cbindgen 生成头文件并冻结 1.0 的 C ABI。
 - M4：显示模式切换、音频采集。多显示器采集的接口从 M1 起保留，实现归入 Pro。
 - Windows 与 Linux 后端只保留接口桩，优先级最低。
 
@@ -192,6 +214,9 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 | 键盘布局差异（非美式布局、IME） | 输错字符 | 扫描码直通加 Unicode 回退；布局测试矩阵 |
 | VideoToolbox 编码参数与延迟 | 卡顿 | 低延迟配置、实时属性、帧确认背压 |
 | 许可证选择拖延 | 影响仓库拆分 | D6 里在 M1 结束前定稿 |
+| CGVirtualDisplay 是私有接口 | 系统更新后自建虚拟显示器失效 | 运行时检测，失效时退回缩放输出；每个 macOS 大版本回归测试 |
+| IronRDP 0.13.0 连接时不给缩放比 | 首次连接无法按 mstsc 的缩放设置选 HiDPI | 会话中的布局消息里取缩放比；向上游提议暴露 Client Core Data |
+| 缩放输出的画质 | 显示器与请求尺寸差距大时画面发虚或字小 | 这是第 1 步的已知代价，第 2 步用原生尺寸的虚拟显示器消除 |
 
 ## 9. 备选方案
 
@@ -215,6 +240,7 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 4. 登录窗口会话：保留为调研项，不进入 M1 到 M3。
 5. 多显示器：M1 起保留接口，实现归入 Pro（M5）。
 6. Windows 与 Linux 后端：优先级最低，只保留接口不做实现。
+7. 分辨率（2026-09-24）：按 D8 三步走，第 1 步进 M2；单块自建虚拟显示器进免费版，多块归 Pro。
 
 ## 12. 未来两周的具体任务
 
@@ -225,3 +251,11 @@ M1 到 M3 合计约 3 到 4 个月出可发布的免费版。
 4. 用 `sdl-freerdp` 与 mstsc 各连一次，记录协商结果与 RemoteFX 在原生和半分辨率下的 fps 与 CPU。
 5. libscreenio：`sync_locks`、Unicode 代理对、光标缓存 id，并给守护进程配一个带稳定 bundle identifier 的签名脚本，
    拿到屏幕录制与辅助功能权限后完成键鼠实机验证。
+
+## 13. 修订记录
+
+| 日期 | 修订 |
+|---|---|
+| 2026-09-23 | 初版，同日接受 |
+| 2026-09-24 | D3 补充 H.264 的尺寸上限 4096x2304，依据是 mstsc 解码器的上限与 8K 实测 |
+| 2026-09-24 | 新增 D8 分辨率跟随客户端，调整 M2 到 M5 的范围、第 3.4 节接口映射、第 5 节 libscreenio 改动、第 8 节风险、第 11 节已决问题 |

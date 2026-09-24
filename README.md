@@ -26,6 +26,13 @@ target/release/rdpmacd --test-pattern 1920x1080 --auth static --user test --pass
 target/release/rdpmacd --request-permissions
 ```
 
+画面默认在客户端支持时走 H.264（`--codec auto`，VideoToolbox 硬件编码，经图形管线发送，不超过 4096x2304），
+否则走 RemoteFX；`--codec remotefx` 固定用 RemoteFX。纯文本剪贴板默认双向共享，`--no-clipboard` 关闭。
+
+会话分辨率默认跟随客户端（`--resolution follow-client`）：mstsc 的 `/w`、`/h`、全屏、.rdp 里的 `desktopwidth` 与
+`desktopheight` 决定连接时的分辨率，启用动态分辨率时拖动窗口会实时调整。Mac 显示器尺寸不同时，画面由
+ScreenCaptureKit 缩放到客户端请求的尺寸，宽高比不同时加黑边。`--resolution native` 恢复为显示器自身的像素尺寸。
+
 首次运行会在 `~/Library/Application Support/rdpmac/` 生成自签名证书。采集需要宿主进程拥有"屏幕录制"权限，
 注入需要"辅助功能"权限；没有权限时服务仍会接受连接，但客户端看不到画面。从终端启动时权限记在终端 App 上；
 作为独立程序运行时记在 `rdpmacd` 的签名身份上，`scripts/sign-dev.sh` 用稳定证书签名可让授权在重新构建后保留，
@@ -33,8 +40,9 @@ target/release/rdpmacd --request-permissions
 
 ## 状态
 
-里程碑进度与实测数字见 `docs/milestones.md`。M1 的协议、认证、光标、输入、锁定键同步、日志与统计都已接线并在
-本机用 FreeRDP 客户端验证；真实屏幕的画面与键鼠注入还差"屏幕录制"和"辅助功能"两项权限的实机验证。
+里程碑进度、实测数字和待验证项见 `docs/milestones.md`。M2 的代码部分已完成：分辨率跟随客户端、显示器替换后重新
+选择、VideoToolbox H.264、按客户端积压自适应码率、纯文本剪贴板。真实屏幕、键鼠、mstsc 与跨机剪贴板还需要
+权限和一台 Windows 客户机来实测。
 
 已知与已发布的 IronRDP 0.13.0 相关的限制：光标形状超过 96 像素时不发送（大光标更新在 IronRDP 主分支上才有），
 水平滚轮事件没有对应变体，鼠标按键事件不带坐标（以最近一次移动为准）。

@@ -11,6 +11,23 @@ pub enum AuthMode {
     Static,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Resolution {
+    /// The size the client asks for (mstsc /w /h, full screen, window resizing); the display is
+    /// scaled to it when the two differ.
+    FollowClient,
+    /// The display's own pixel size.
+    Native,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Codec {
+    /// H.264 through the graphics pipeline when the client supports it, RemoteFX otherwise.
+    Auto,
+    /// RemoteFX and bitmap updates only.
+    Remotefx,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "rdpmacd", version, about = "RDP server for the macOS console session")]
 pub struct Args {
@@ -29,6 +46,18 @@ pub struct Args {
     /// Cursor polling rate.
     #[arg(long, default_value_t = 30)]
     pub cursor_hz: u32,
+
+    /// Video codec for the session picture.
+    #[arg(long, value_enum, default_value_t = Codec::Auto)]
+    pub codec: Codec,
+
+    /// Do not share the clipboard with clients.
+    #[arg(long)]
+    pub no_clipboard: bool,
+
+    /// How the session resolution is chosen.
+    #[arg(long, value_enum, default_value_t = Resolution::FollowClient)]
+    pub resolution: Resolution,
 
     #[arg(long, value_enum, default_value_t = AuthMode::Pam)]
     pub auth: AuthMode,

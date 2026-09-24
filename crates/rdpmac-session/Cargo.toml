@@ -12,8 +12,19 @@ screenio-core.workspace = true
 rdpmac-encode = { path = "../rdpmac-encode" }
 ironrdp-server.workspace = true
 ironrdp-pdu.workspace = true
+ironrdp-displaycontrol.workspace = true
+ironrdp-egfx.workspace = true
+ironrdp-dvc.workspace = true
+ironrdp-svc.workspace = true
+ironrdp-cliprdr.workspace = true
+ironrdp-core.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }

@@ -129,8 +129,8 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
             Event::Mouse(MouseEvent::VerticalScroll { value }) => input.mouse_wheel(0, i32::from(value)),
             Event::Mouse(MouseEvent::Scroll { x, y }) => input.mouse_wheel(x, y),
             Event::Mouse(MouseEvent::RelMove { x, y }) => {
-                let scale = current(&geometry).scale;
-                input.mouse_move_rel((f64::from(x) / scale).round() as i32, (f64::from(y) / scale).round() as i32)
+                let density = current(&geometry).pixels_per_point();
+                input.mouse_move_rel((f64::from(x) / density).round() as i32, (f64::from(y) / density).round() as i32)
             }
             Event::Mouse(other) => match button_event(&other) {
                 Some((button, pressed)) => input.mouse_button(button, pressed),

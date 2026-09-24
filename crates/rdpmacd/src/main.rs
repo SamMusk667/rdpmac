@@ -10,13 +10,13 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use ironrdp_server::{CredentialValidator, RdpServer, TlsIdentityCtx};
 use rdpmac_auth::{Lockout, StaticValidator};
-use rdpmac_session::display::{DisplayHandler, FrameSource};
+use rdpmac_session::display::{DisplayHandler, FrameSource, ResolutionMode};
 use rdpmac_session::input::InputHandler;
 use rdpmac_session::monitor::{FixedMonitor, MonitorPolicy, PrimaryMonitor};
 use rdpmac_session::Geometry;
 use tracing::{info, warn};
 
-use crate::config::{Args, AuthMode};
+use crate::config::{Args, AuthMode, Codec, Resolution};
 
 fn init_logging() -> anyhow::Result<()> {
     use tracing_subscriber::prelude::*;
@@ -91,14 +91,7 @@ async fn main() -> anyhow::Result<()> {
         Vec::new()
     });
     let initial = match (policy.select(&displays), args.test_pattern) {
-        (_, Some((width, height))) => Geometry {
-            id: 0,
-            x: 0,
-            y: 0,
-            width,
-            height,
-            scale: 1.0,
-        },
+        (_, Some((width, height))) => Geometry::synthetic(width, height),
         (Some(chosen), None) => {
             info!(
                 display = chosen.id,
@@ -108,19 +101,12 @@ async fn main() -> anyhow::Result<()> {
                 session = ?screenio_core::session_info(),
                 "serving display"
             );
-            Geometry::from_display(&chosen)
+            Geometry::native(&chosen)
         }
         (None, None) => {
             // Displays asleep or detached at startup: keep serving, the capture loop retries.
             warn!(available = ?displays.iter().map(|d| d.id).collect::<Vec<_>>(), "no matching display yet");
-            Geometry {
-                id: args.display.unwrap_or(0),
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                scale: 1.0,
-            }
+            Geometry::synthetic(1920, 1080)
         }
     };
     let geometry = rdpmac_session::shared(initial);
@@ -135,7 +121,18 @@ async fn main() -> anyhow::Result<()> {
         }
         None => FrameSource::Screen,
     };
-    let display_handler = DisplayHandler::with_source(policy, geometry.clone(), source, args.fps, args.cursor_hz);
+    let mode = match args.resolution {
+        Resolution::FollowClient => ResolutionMode::FollowClient,
+        Resolution::Native => ResolutionMode::Native,
+    };
+    info!(?mode, "session resolution");
+    let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz);
+    let gfx = (args.codec == Codec::Auto).then(rdpmac_session::gfx::GfxLink::new);
+    let display_handler = match &gfx {
+        Some(link) => display_handler.with_gfx(link.clone()),
+        None => display_handler,
+    };
+    info!(codec = ?args.codec, "session codec");
     let input_handler = InputHandler::spawn(geometry);
     let validator = validator(&args)?;
 
@@ -145,6 +142,16 @@ async fn main() -> anyhow::Result<()> {
         .with_input_handler(input_handler)
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
+        // Adopt the size the client asks for in its connection request instead of the display's;
+        // DisplayHandler::request_initial_size then serves exactly that size.
+        .with_honor_client_desktop_size(mode == ResolutionMode::FollowClient)
+        .with_cliprdr_factory((!args.no_clipboard).then(|| {
+            Box::new(rdpmac_session::clipboard::ClipboardFactory::new())
+                as Box<dyn ironrdp_server::CliprdrServerFactory>
+        }))
+        .with_gfx_factory(gfx.map(|link| {
+            Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
+        }))
         .build();
     info!(listen = %args.listen, "rdpmacd listening");
     server.run().await.context("server stopped with an error")

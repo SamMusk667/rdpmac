@@ -19,6 +19,13 @@ publish = false
 screenio-core = { path = "../libscreenio/crates/screenio-core" }
 ironrdp-server = { version = "0.13", default-features = false, features = ["rayon", "helper", "egfx"] }
 ironrdp-pdu = "0.9"
+# Same minor as ironrdp-server 0.13 uses, so the layout type in RdpServerDisplay::request_layout unifies.
+ironrdp-displaycontrol = "0.8"
+ironrdp-egfx = "0.3"
+ironrdp-dvc = "0.8"
+ironrdp-svc = "0.8"
+ironrdp-cliprdr = "0.7"
+ironrdp-core = "0.2"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net"] }
 async-trait = "0.1"
 anyhow = "1"
