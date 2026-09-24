@@ -255,6 +255,7 @@ async fn main() -> anyhow::Result<()> {
         cert,
         key,
         started: status::now(),
+        permissions_at_start: screenio_core::session_info(),
     });
     tokio::spawn(async move {
         if let Err(e) = control::serve(control).await {

@@ -22,6 +22,11 @@ struct MenuContent: View {
                 model.grantAccessibility()
             }
             .disabled(status.permissions.accessibility)
+            if model.restartNeeded {
+                Button("Restart Server to Use the New Permissions") { model.restartServer() }
+            } else if !model.permissionsGranted {
+                Text("Restart the server after allowing")
+            }
             Divider()
             Button("Settings…") { windows.showSettings(model) }
             Button("Import Certificate…") { model.importCertificate() }
@@ -79,6 +84,18 @@ struct WelcomeView: View {
             step(3, "Allow Accessibility, so clients can use the keyboard and mouse",
                  done: model.status?.permissions.accessibility == true) {
                 Button("Allow…") { model.grantAccessibility() }.disabled(!model.running)
+            }
+            if model.running && !model.permissionsGranted {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(model.restartNeeded
+                         ? "The server has to restart to use the permissions you allowed."
+                         : "macOS applies a permission to the running server only after it restarts. After switching it on in System Settings, restart the server.")
+                        .font(.callout)
+                        .foregroundStyle(model.restartNeeded ? .orange : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Restart Server") { model.restartServer() }
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {

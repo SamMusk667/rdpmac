@@ -3,7 +3,8 @@
 //!
 //! Requests are `{"cmd": ...}` with `status`, `request_permissions`, `get_config`,
 //! `set_config` (`settings`: the whole file), `import_certificate` (`cert_pem`, `key_pem`) and
-//! `restart`. Every answer carries `"ok"`, and `"error"` when it is false.
+//! `restart`. Every answer carries `"ok"`, and `"error"` when it is false. The status says
+//! `restart_needed` when a permission was granted after the daemon started.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -54,6 +55,9 @@ pub struct Control {
     pub cert: PathBuf,
     pub key: PathBuf,
     pub started: u64,
+    /// The permissions when the daemon started. macOS applies a permission granted later only
+    /// to a new process, and the screen recording check keeps answering as it did at launch.
+    pub permissions_at_start: screenio_core::SessionInfo,
 }
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
@@ -186,6 +190,7 @@ impl Control {
             "pid": std::process::id(),
             "started": self.started,
             "permissions": permissions(&info),
+            "restart_needed": granted_since_start(&self.permissions_at_start, &info),
             "connection": connection,
             "session_size": connection.as_ref().map(|_| [size.width, size.height]),
             "last_connection": self.tracker.last(),
@@ -202,6 +207,10 @@ impl Control {
 
 fn permissions(info: &screenio_core::SessionInfo) -> Value {
     json!({ "screen_recording": info.can_capture, "accessibility": info.can_inject })
+}
+
+fn granted_since_start(at_start: &screenio_core::SessionInfo, now: &screenio_core::SessionInfo) -> bool {
+    (now.can_capture && !at_start.can_capture) || (now.can_inject && !at_start.can_inject)
 }
 
 fn hex(bytes: &[u8]) -> String {

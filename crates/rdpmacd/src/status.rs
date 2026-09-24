@@ -13,6 +13,7 @@ use ironrdp_server::{
 };
 use rdpmac_auth::bare_username;
 use serde::Serialize;
+use tracing::warn;
 
 /// Seconds since the Unix epoch.
 pub fn now() -> u64 {
@@ -96,6 +97,14 @@ pub struct Connections(pub Arc<Tracker>);
 impl ConnectionHandler for Connections {
     fn on_accept(&mut self, peer: SocketAddr) -> bool {
         self.0.accepted(peer);
+        // macOS drops posted events silently, so injection itself never reports this.
+        if !screenio_core::session_info().can_inject {
+            warn!(
+                %peer,
+                "accessibility permission is missing: macOS drops this client's clicks and keys; allow rdpmacd \
+                 under System Settings > Privacy & Security > Accessibility, then restart the server"
+            );
+        }
         true
     }
 

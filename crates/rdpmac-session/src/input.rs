@@ -15,6 +15,7 @@ use tracing::{error, warn};
 
 use crate::{current, SharedGeometry};
 
+#[derive(Debug)]
 enum Event {
     Key(KeyboardEvent),
     Mouse(MouseEvent),
@@ -106,39 +107,39 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
     };
     let mut pending_surrogate = None;
     for event in rx {
-        let result = match event {
+        let result = match &event {
             Event::Key(KeyboardEvent::Pressed { code, extended }) => {
-                input.key_scancode(u16::from(code), if extended { key_flags::EXTENDED } else { 0 })
+                input.key_scancode(u16::from(*code), if *extended { key_flags::EXTENDED } else { 0 })
             }
             Event::Key(KeyboardEvent::Released { code, extended }) => input.key_scancode(
-                u16::from(code),
-                key_flags::RELEASE | if extended { key_flags::EXTENDED } else { 0 },
+                u16::from(*code),
+                key_flags::RELEASE | if *extended { key_flags::EXTENDED } else { 0 },
             ),
-            Event::Key(KeyboardEvent::UnicodePressed(unit)) => match utf16_unit(&mut pending_surrogate, unit) {
+            Event::Key(KeyboardEvent::UnicodePressed(unit)) => match utf16_unit(&mut pending_surrogate, *unit) {
                 Some(cp) => input.key_unicode(cp, true),
                 None => Ok(()),
             },
             Event::Key(KeyboardEvent::UnicodeReleased(_)) => Ok(()),
-            Event::Key(KeyboardEvent::Synchronize(flags)) => input.sync_locks(lock_bits(flags)),
+            Event::Key(KeyboardEvent::Synchronize(flags)) => input.sync_locks(lock_bits(*flags)),
             #[allow(unreachable_patterns)]
             Event::Key(_) => Ok(()),
             Event::Mouse(MouseEvent::Move { x, y }) => {
-                let (px, py) = current(&geometry).to_points(x, y);
+                let (px, py) = current(&geometry).to_points(*x, *y);
                 input.mouse_move(px, py)
             }
-            Event::Mouse(MouseEvent::VerticalScroll { value }) => input.mouse_wheel(0, i32::from(value)),
-            Event::Mouse(MouseEvent::Scroll { x, y }) => input.mouse_wheel(x, y),
+            Event::Mouse(MouseEvent::VerticalScroll { value }) => input.mouse_wheel(0, i32::from(*value)),
+            Event::Mouse(MouseEvent::Scroll { x, y }) => input.mouse_wheel(*x, *y),
             Event::Mouse(MouseEvent::RelMove { x, y }) => {
                 let density = current(&geometry).pixels_per_point();
-                input.mouse_move_rel((f64::from(x) / density).round() as i32, (f64::from(y) / density).round() as i32)
+                input.mouse_move_rel((f64::from(*x) / density).round() as i32, (f64::from(*y) / density).round() as i32)
             }
-            Event::Mouse(other) => match button_event(&other) {
+            Event::Mouse(other) => match button_event(other) {
                 Some((button, pressed)) => input.mouse_button(button, pressed),
                 None => Ok(()),
             },
         };
         if let Err(e) = result {
-            warn!(%e, "input injection failed");
+            warn!(%e, ?event, "input injection failed");
         }
     }
     if let Err(e) = input.release_all() {

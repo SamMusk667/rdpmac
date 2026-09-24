@@ -44,6 +44,8 @@ struct DaemonStatus: Decodable {
     let version: String
     let pid: Int32
     let permissions: Permissions
+    /// A permission was granted after the server started; macOS applies it after a restart.
+    let restartNeeded: Bool?
     let connection: Connection?
     let sessionSize: [Int]?
     let lastConnection: Ended?
@@ -57,6 +59,7 @@ struct DaemonStatus: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case version, pid, permissions, connection, displays, settings, certificate
+        case restartNeeded = "restart_needed"
         case sessionSize = "session_size"
         case lastConnection = "last_connection"
         case virtualDisplaysSupported = "virtual_displays_supported"

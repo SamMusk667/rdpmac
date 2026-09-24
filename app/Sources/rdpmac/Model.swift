@@ -18,8 +18,11 @@ final class Model: ObservableObject {
 
     var permissionsGranted: Bool {
         guard let permissions = status?.permissions else { return false }
-        return permissions.screenRecording && permissions.accessibility
+        return permissions.screenRecording && permissions.accessibility && !restartNeeded
     }
+
+    /// macOS applies a permission to the running server only after it restarts.
+    var restartNeeded: Bool { status?.restartNeeded == true }
 
     var symbol: String {
         guard let status, permissionsGranted else { return "exclamationmark.triangle" }
