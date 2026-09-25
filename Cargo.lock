@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "rdpmac-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ironrdp-server",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "rdpmac-encode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "ironrdp-server",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "rdpmac-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "rdpmacd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

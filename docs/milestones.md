@@ -121,7 +121,7 @@ M3 还需要你来完成的：
 
 | 项 | 需要的条件 |
 |---|---|
-| 在菜单栏 App 里走一遍欢迎窗口、设置、证书导入 | 先 `sh scripts/agent.sh uninstall`，再装 `build/rdpmac-0.1.0.pkg`，给 App 里的 `rdpmacd` 授权 |
+| 在菜单栏 App 里走一遍欢迎窗口、设置、证书导入 | 先 `sh scripts/agent.sh uninstall`，再装 `build/rdpmac-VERSION.pkg`，给 App 里的 `rdpmacd` 授权 |
 | 全新 Mac 从安装到首次连接不用终端 | 一台干净的 Mac，以及公证过的安装器 |
 | Developer ID 签名与公证 | Apple 开发者账号：Developer ID Application 与 Installer 证书，`notarytool` 凭据 |
 | 虚拟显示器的 HiDPI 模式 | 暂缓：需要找到不触发上面第一条问题的切换方式 |
