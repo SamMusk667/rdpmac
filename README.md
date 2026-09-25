@@ -51,7 +51,10 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
 * 显示器列表包含已连接但休眠的显示器，面板关掉时服务仍能寻址它。
 * 虚拟显示器：`VirtualDisplay`（C 接口 `sio_virtual_display_*`）基于私有接口 CGVirtualDisplay，运行时检测是否可用，
   尺寸为 1x 像素。不接显示器的 Mac 上它替代系统的占位显示器（`placeholder` 为真的那块）成为桌面，释放后占位显示器
-  以新的 id 回来。macOS 26 会把 3840x2160 定成 1920x1080，这时 `resize` 返回错误，显示器保留系统选定的尺寸。
+  以新的 id 回来。macOS 26 在学到 3840x2160 之前会把它定成 1920x1080：Rust 接口的 `create_with_switch` 这时经调用方
+  提供的辅助进程调用 `switch_display_mode` 切过去，macOS 按显示器身份记住后，之后的显示器直接就是 4K。切换必须在
+  另一个进程里做，执行切换的进程会一直占住这块显示器，让它不再响应改尺寸。C 接口没有这一步，`resize` 返回错误，
+  显示器保留系统选定的尺寸。
 * 光标形状带 `scale`，即位图像素与点之比，调用方按会话缩放光标时用它。
 * 权限引导：`open_privacy_settings`（C 接口 `sio_open_privacy_settings`）打开"隐私与安全性"里屏幕录制或辅助功能那一页；
   `request_permissions` 负责把进程加进这两个列表。

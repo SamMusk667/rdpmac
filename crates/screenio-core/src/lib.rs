@@ -116,6 +116,10 @@ impl Capturer {
     }
 }
 
+/// Runs [`switch_display_mode`] with these arguments in another process and says whether it
+/// worked; see [`VirtualDisplay::create_with_switch`].
+pub type ModeSwitch = fn(display_id: u32, width: u32, height: u32) -> bool;
+
 /// A display that exists only in software. On macOS it comes from the private CGVirtualDisplay
 /// API; on a Mac without a screen attached it replaces the placeholder display and becomes the
 /// desktop. It stays online while the value lives.
@@ -129,9 +133,18 @@ impl VirtualDisplay {
     }
 
     /// Creates a display of `width` x `height` pixels at 1x density and waits until it shows that
-    /// size. macOS refuses some large sizes, 3840x2160 among them; see [`VirtualDisplay::resize`].
+    /// size. macOS may keep a smaller default instead: 3840x2160 ends at 1920x1080 until macOS has
+    /// learned that size for the display; see [`VirtualDisplay::create_with_switch`].
     pub fn create(name: &str, width: u32, height: u32) -> Result<Self> {
-        platform::VirtualDisplay::create(name, width, height).map(VirtualDisplay)
+        platform::VirtualDisplay::create(name, width, height, None).map(VirtualDisplay)
+    }
+
+    /// Like [`VirtualDisplay::create`], but when macOS keeps another size than a listed one it was
+    /// asked for, now or in a later resize, `switch` switches to it the way System Settings does.
+    /// macOS remembers that choice for the display, so later displays and resizes get the size
+    /// without a switch. `switch` must run [`switch_display_mode`] in another process.
+    pub fn create_with_switch(name: &str, width: u32, height: u32, switch: ModeSwitch) -> Result<Self> {
+        platform::VirtualDisplay::create(name, width, height, Some(switch)).map(VirtualDisplay)
     }
 
     /// The display id used by [`list_displays`] and [`Capturer::open`].
@@ -141,11 +154,20 @@ impl VirtualDisplay {
 
     /// Switches to another size and waits until the display shows it; the id stays. Sizes above
     /// 3840x2400 need a display created at least that large. When macOS settles on another size
-    /// instead, this returns [`Error::Os`] and the display keeps the size macOS chose, which
-    /// [`list_displays`] reports.
+    /// and no switch helps, this returns [`Error::Os`] and the display keeps the size macOS
+    /// chose, which [`list_displays`] reports.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         self.0.resize(width, height)
     }
+}
+
+/// Switches display `display_id` to its `width` x `height` mode at 1x, as System Settings does;
+/// macOS remembers the choice for that display. The process that switches holds on to the
+/// display until it exits: the display ignores its owner's resizes and outlives its
+/// [`VirtualDisplay`]. For a virtual display, call this from a short-lived helper process, never
+/// from the process that owns the display. [`Error::Invalid`] when the display lists no such mode.
+pub fn switch_display_mode(display_id: u32, width: u32, height: u32) -> Result<()> {
+    platform::switch_display_mode(display_id, width, height)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

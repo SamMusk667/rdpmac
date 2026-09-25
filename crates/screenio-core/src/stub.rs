@@ -1,8 +1,8 @@
 //! Interface-only implementation for platforms that have no backend yet.
 
 use crate::{
-    CursorPosition, CursorShape, DisplayInfo, Error, Frame, MouseButton, PrivacyPane, Result,
-    SessionInfo,
+    CursorPosition, CursorShape, DisplayInfo, Error, Frame, ModeSwitch, MouseButton, PrivacyPane,
+    Result, SessionInfo,
 };
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ impl VirtualDisplay {
         false
     }
 
-    pub fn create(_name: &str, _width: u32, _height: u32) -> Result<Self> {
+    pub fn create(_name: &str, _width: u32, _height: u32, _switch: Option<ModeSwitch>) -> Result<Self> {
         Err(Error::Unsupported)
     }
 
@@ -28,6 +28,10 @@ impl VirtualDisplay {
     pub fn resize(&mut self, _width: u32, _height: u32) -> Result<()> {
         Err(Error::Unsupported)
     }
+}
+
+pub fn switch_display_mode(_display_id: u32, _width: u32, _height: u32) -> Result<()> {
+    Err(Error::Unsupported)
 }
 
 pub struct Capturer;

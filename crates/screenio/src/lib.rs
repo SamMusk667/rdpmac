@@ -232,7 +232,8 @@ pub unsafe extern "C" fn sio_virtual_display_id(display: *const sio_virtual_disp
 }
 
 /// Waits until the display shows the new size. Returns `SIO_E_OS` when macOS settles on another
-/// size instead (3840x2160 ends at 1920x1080); the display then keeps that size.
+/// size instead (3840x2160 ends at 1920x1080 until macOS has learned that size for the display,
+/// for example from a switch in System Settings); the display then keeps that size.
 #[no_mangle]
 pub unsafe extern "C" fn sio_virtual_display_resize(
     display: *mut sio_virtual_display_t,

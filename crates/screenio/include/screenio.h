@@ -149,7 +149,8 @@ int32_t sio_virtual_display_create(const char *name,
 uint32_t sio_virtual_display_id(const struct sio_virtual_display_t *display);
 
 // Waits until the display shows the new size. Returns `SIO_E_OS` when macOS settles on another
-// size instead (3840x2160 ends at 1920x1080); the display then keeps that size.
+// size instead (3840x2160 ends at 1920x1080 until macOS has learned that size for the display,
+// for example from a switch in System Settings); the display then keeps that size.
 int32_t sio_virtual_display_resize(struct sio_virtual_display_t *display,
                                    uint32_t width,
                                    uint32_t height);

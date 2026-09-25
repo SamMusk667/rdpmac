@@ -5,20 +5,25 @@
 //! A display offers exactly one 1x mode, and applying new settings is the whole resize: macOS
 //! switches to the offered mode on its own. What was observed on macOS 26 shapes the rest:
 //!
-//! - Switching modes explicitly makes the window server ignore later settings for the display.
 //! - A process that has read any display's modes never sees the modes of displays that appear
 //!   afterwards, so readiness is judged by the bounds, which stay current and equal the pixel
 //!   size at 1x.
 //! - For very large sizes macOS may pick a smaller default first; applying the settings again
-//!   fixes 5K, but 3840x2160 always ends at 1920x1080. `resize` reports such a refusal and the
-//!   display keeps the size macOS chose.
+//!   fixes 5K. For 3840x2160 it keeps 1920x1080, one of the standard modes it adds to the list,
+//!   until a switch to 3840x2160 has taught it otherwise: macOS remembers the mode chosen for a
+//!   display by its vendor, product and serial number, and from then on displays with this
+//!   identity take 3840x2160 like any other size.
+//! - The process that switches a display's mode holds on to the display until it exits: the
+//!   display ignores later settings and stays online after its release. So the switch runs in a
+//!   helper process that the owner provides; see [`switch_display_mode`].
 
 use std::ffi::CStr;
+use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
-use core_graphics::display::CGDisplay;
+use core_graphics::display::{CGConfigureOption, CGDisplay, CGDisplayMode};
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
 use objc2::msg_send;
 use objc2::rc::{Allocated, Retained};
@@ -26,7 +31,7 @@ use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSString};
 
-use crate::{Error, Result};
+use crate::{Error, ModeSwitch, Result};
 
 /// "rd" and "ma". A fixed serial number lets macOS remember the display's arrangement.
 const VENDOR_ID: u32 = 0x7264;
@@ -83,6 +88,8 @@ pub struct VirtualDisplay {
     display: Retained<AnyObject>,
     id: u32,
     max: (u32, u32),
+    /// Switches the mode from another process when macOS keeps another size.
+    switch: Option<ModeSwitch>,
     /// The queue CGVirtualDisplay runs its termination handler on.
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -96,7 +103,7 @@ impl VirtualDisplay {
         CLASSES.iter().all(|name| AnyClass::get(name).is_some())
     }
 
-    pub fn create(name: &str, width: u32, height: u32) -> Result<Self> {
+    pub fn create(name: &str, width: u32, height: u32, switch: Option<ModeSwitch>) -> Result<Self> {
         validate(width, height)?;
         let display_class = class(c"CGVirtualDisplay")?;
         let descriptor_class = class(c"CGVirtualDisplayDescriptor")?;
@@ -135,6 +142,7 @@ impl VirtualDisplay {
             display,
             id,
             max,
+            switch,
             _queue: queue,
         };
         created.resize(width, height)?;
@@ -162,6 +170,15 @@ impl VirtualDisplay {
                 return Ok(());
             }
         }
+        if let Some(switch) = self.switch {
+            if switch(self.id, width, height) && wait_until_shown(self.id, width, height) {
+                log::info!(
+                    "switched virtual display {} to {width}x{height}; macOS keeps that size for it from now on",
+                    self.id
+                );
+                return Ok(());
+            }
+        }
         log::warn!("macOS did not switch virtual display {} to {width}x{height}", self.id);
         Err(Error::Os)
     }
@@ -186,4 +203,26 @@ impl VirtualDisplay {
             Err(Error::Os)
         }
     }
+}
+
+/// Switches through the public CoreGraphics calls, which see every display in a process that
+/// started after it appeared, as a helper process does.
+pub fn switch_display_mode(id: u32, width: u32, height: u32) -> Result<()> {
+    let (width, height) = (u64::from(width), u64::from(height));
+    let modes = CGDisplayMode::all_display_modes(id, ptr::null()).ok_or(Error::Invalid)?;
+    let mode = modes
+        .iter()
+        .find(|m| m.width() == width && m.height() == height && m.pixel_width() == width)
+        .ok_or(Error::Invalid)?;
+    let display = CGDisplay::new(id);
+    let config = display.begin_configuration().map_err(|_| Error::Os)?;
+    if display.configure_display_with_display_mode(&config, mode).is_err() {
+        if let Err(e) = display.cancel_configuration(&config) {
+            log::debug!("discarding the display configuration failed: {e}");
+        }
+        return Err(Error::Os);
+    }
+    display
+        .complete_configuration(&config, CGConfigureOption::ConfigurePermanently)
+        .map_err(|_| Error::Os)
 }
