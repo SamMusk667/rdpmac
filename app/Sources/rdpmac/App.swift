@@ -128,7 +128,13 @@ struct MenuBarIcon: View {
 /// anywhere, including at launch, in an app that has no Dock icon.
 @MainActor
 final class Windows {
-    private var open: [String: NSWindow] = [:]
+    private struct Shown {
+        let window: NSWindow
+        let sizing: NSKeyValueObservation
+        let closing: NSObjectProtocol
+    }
+
+    private var shown: [String: Shown] = [:]
 
     func showWelcome(_ model: Model) {
         show("welcome", title: "Welcome to rdpmac", WelcomeView(model: model, windows: self))
@@ -141,22 +147,47 @@ final class Windows {
     }
 
     func close(_ id: String) {
-        open[id]?.close()
+        shown[id]?.window.close()
     }
 
     /// Brings a visible window forward; otherwise builds it afresh, so it shows current values.
     private func show<Content: View>(_ id: String, title: String, _ content: Content) {
         NSApp.activate(ignoringOtherApps: true)
-        if let window = open[id], window.isVisible {
+        if let window = shown[id]?.window, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let window = NSWindow(contentViewController: NSHostingController(rootView: content))
+        let hosting = NSHostingController(rootView: content)
+        // By default SwiftUI sets the window's minimum and maximum size while AppKit updates
+        // constraints. When the content changes size meanwhile, as the status refresh every two
+        // seconds makes it do, AppKit gives up with an exception and the app quits. The window
+        // follows the content's size afterwards instead.
+        hosting.sizingOptions = .preferredContentSize
+        let window = NSWindow(contentViewController: hosting)
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
+        window.setContentSize(hosting.sizeThatFits(in: NSSize(width: CGFloat.infinity, height: .infinity)))
         window.center()
-        open[id] = window
+        let sizing = hosting.observe(\.preferredContentSize) { [weak window] controller, _ in
+            let size = controller.preferredContentSize
+            guard size.width > 0, size.height > 0 else { return }
+            DispatchQueue.main.async { window?.setContentSize(size) }
+        }
+        // A closed window is let go, so its content stops following the status.
+        let closing = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.forget(id) }
+        }
+        shown[id] = Shown(window: window, sizing: sizing, closing: closing)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func forget(_ id: String) {
+        guard let gone = shown[id], !gone.window.isVisible else { return }
+        NotificationCenter.default.removeObserver(gone.closing)
+        gone.sizing.invalidate()
+        shown[id] = nil
     }
 }
