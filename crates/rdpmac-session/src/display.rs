@@ -35,6 +35,8 @@ const REOPEN_DELAY: Duration = Duration::from_secs(5);
 const STATS_INTERVAL: Duration = Duration::from_secs(5);
 /// How often the capture loop checks whether the display changed or was replaced.
 const DISPLAY_POLL: Duration = Duration::from_secs(1);
+/// How long a session start waits for a display to wake.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How the session size is chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +101,17 @@ fn display_moved(policy: &dyn MonitorPolicy, display: &DisplayInfo) -> bool {
                 || (d.scale - display.scale).abs() > f32::EPSILON
         }
         None => true,
+    }
+}
+
+/// Declares the user active and waits for a display to wake. Until a user is active, a Mac asleep
+/// or locked keeps its display dark, keeps listing a virtual display released earlier, and has
+/// its lock screen turn every password down unchecked.
+fn wake() {
+    match screenio_core::wake_displays(WAKE_TIMEOUT) {
+        Ok(true) => {}
+        Ok(false) => warn!(seconds = WAKE_TIMEOUT.as_secs(), "no display woke up; the picture stays dark until one does"),
+        Err(e) => warn!(%e, "declaring the user active failed"),
     }
 }
 
@@ -208,6 +221,11 @@ impl RdpServerDisplay for DisplayHandler {
     }
 
     async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
+        if self.source == FrameSource::Screen {
+            if let Err(e) = tokio::task::spawn_blocking(wake).await {
+                warn!(%e, "waking the displays failed");
+            }
+        }
         if self.mode == ResolutionMode::FollowClient {
             let requested = (u32::from(client_size.width), u32::from(client_size.height));
             info!(width = requested.0, height = requested.1, "session size follows the client");

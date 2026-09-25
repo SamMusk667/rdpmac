@@ -76,6 +76,9 @@ target/release/rdpmacd --request-permissions
 - 3840x2160 第一次会被 macOS 定成 1920x1080。rdpmacd 这时以辅助进程把显示器切到 4K，效果与在系统设置里手动切换
   相同；macOS 按显示器身份记住后，以后的 4K 会话直接就是 4K。
 - 接了显示器，或 macOS 不接受请求的尺寸，画面由 ScreenCaptureKit 缩放到请求的尺寸，宽高比不同时加黑边。
+- 锁屏时也能连上并解锁：会话开始时 rdpmacd 向系统声明用户活动（效果与 `caffeinate -u` 相同），屏幕点亮、锁屏界面
+  出来，在 RDP 里输入口令即可解锁。收到远程键鼠时也会声明（最多每 2 秒一次），因为 macOS 不把注入的事件当作能
+  启动解锁流程的用户活动：不声明的话，锁屏照样显示口令框，却对任何口令都不校验就判错。
 - `--resolution native` 恢复为显示器自身的像素尺寸。
 
 首次运行会在 `~/Library/Application Support/rdpmac/` 生成 TLS 自签名证书。采集需要"屏幕录制"权限，注入需要

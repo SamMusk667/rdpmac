@@ -4,14 +4,28 @@
 //! thread that owns the libscreenio `Input`, converts RDP pixel coordinates to macOS points and
 //! releases everything it still holds when the session ends. Button events in this IronRDP
 //! release carry no coordinates, so the thread remembers the last pointer position.
+//!
+//! The thread also declares the remote user active, which injected events alone do not do: a
+//! locked screen starts the flow that checks its password only for an active user, and turns
+//! every password down unchecked without it.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use ironrdp_server::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use ironrdp_pdu::input::fast_path::SynchronizeFlags;
 use screenio_core::{key_flags, lock_flags, Input, MouseButton};
 use tracing::{error, warn};
+
+/// How often remote input is declared as user activity.
+const ACTIVITY_EVERY: Duration = Duration::from_secs(2);
+/// After this long without input the lock screen's unlock flow may have timed out, which it does
+/// about 30 seconds after it started...
+const ACTIVITY_LAPSE: Duration = Duration::from_secs(20);
+/// ...and the declaration takes this long to start it again (about 50 ms measured) before the key
+/// or click it precedes arrives.
+const ACTIVITY_SETTLE: Duration = Duration::from_millis(200);
 
 use crate::{current, SharedGeometry};
 
@@ -97,6 +111,34 @@ fn button_event(event: &MouseEvent) -> Option<(MouseButton, bool)> {
     })
 }
 
+/// Declares remote input as user activity, at most every [`ACTIVITY_EVERY`].
+#[derive(Default)]
+struct Activity {
+    declared: Option<Instant>,
+    failure_reported: bool,
+}
+
+impl Activity {
+    fn input(&mut self) {
+        let now = Instant::now();
+        let since = self.declared.map(|t| now.duration_since(t));
+        if since.is_some_and(|s| s < ACTIVITY_EVERY) {
+            return;
+        }
+        self.declared = Some(now);
+        if let Err(e) = screenio_core::declare_user_activity() {
+            if !self.failure_reported {
+                warn!(%e, "declaring the remote user active failed; a locked screen may refuse passwords");
+                self.failure_reported = true;
+            }
+            return;
+        }
+        if since.is_none_or(|s| s >= ACTIVITY_LAPSE) {
+            thread::sleep(ACTIVITY_SETTLE);
+        }
+    }
+}
+
 fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
     let mut input = match Input::open() {
         Ok(i) => i,
@@ -106,7 +148,9 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
         }
     };
     let mut pending_surrogate = None;
+    let mut activity = Activity::default();
     for event in rx {
+        activity.input();
         let result = match &event {
             Event::Key(KeyboardEvent::Pressed { code, extended }) => {
                 input.key_scancode(u16::from(*code), if *extended { key_flags::EXTENDED } else { 0 })

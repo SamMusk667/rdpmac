@@ -16,6 +16,9 @@ const NAME: &str = "rdpmac";
 /// How long the display stays after the last session ended, so a reconnect finds it in place.
 const GRACE: Duration = Duration::from_secs(30);
 const REAP_POLL: Duration = Duration::from_secs(1);
+/// How long `prepare` waits for macOS to drop the displays released earlier.
+const RELEASE_WAIT: Duration = Duration::from_secs(3);
+const RELEASE_POLL: Duration = Duration::from_millis(100);
 
 /// True when a display other than the placeholder and our own is online.
 fn screen_attached(displays: &[DisplayInfo], ours: Option<u32>) -> bool {
@@ -24,8 +27,25 @@ fn screen_attached(displays: &[DisplayInfo], ours: Option<u32>) -> bool {
 
 struct State {
     display: Option<VirtualDisplay>,
+    /// Displays released here that macOS may still list. While the Mac is locked it keeps a
+    /// released display, asleep or even awake, until a user becomes active; until then it would
+    /// pass for an attached screen.
+    released: Vec<u32>,
     streams: usize,
     last_used: Instant,
+}
+
+impl State {
+    /// Removes the display; false when there was none.
+    fn release(&mut self) -> bool {
+        match self.display.take() {
+            Some(display) => {
+                self.released.push(display.id());
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 pub struct VirtualScreen {
@@ -48,6 +68,7 @@ impl VirtualScreen {
         let screen = Arc::new(Self {
             state: Mutex::new(State {
                 display: None,
+                released: Vec::new(),
                 streams: 0,
                 last_used: Instant::now(),
             }),
@@ -67,18 +88,20 @@ impl VirtualScreen {
     /// Blocks while macOS reconfigures, normally well under a second. Returns the display id when
     /// the display shows the size; otherwise the session scales whatever display it serves.
     pub fn prepare(&self, width: u32, height: u32) -> Option<u32> {
-        let mut state = lock(&self.state);
-        state.last_used = Instant::now();
-        let ours = state.display.as_ref().map(VirtualDisplay::id);
-        let displays = match list_displays() {
+        // Keeps the reaper away while this waits for macOS.
+        lock(&self.state).last_used = Instant::now();
+        let displays = match self.settled_displays() {
             Ok(d) => d,
             Err(e) => {
                 warn!(%e, "listing displays failed; not using a virtual display");
                 return None;
             }
         };
+        let mut state = lock(&self.state);
+        state.last_used = Instant::now();
+        let ours = state.display.as_ref().map(VirtualDisplay::id);
         if screen_attached(&displays, ours) {
-            if state.streams == 0 && state.display.take().is_some() {
+            if state.streams == 0 && state.release() {
                 info!("a screen is attached; removed the virtual display");
             }
             debug!("a screen is attached; the session scales it");
@@ -104,6 +127,28 @@ impl VirtualScreen {
             },
         }
         state.display.as_ref().map(VirtualDisplay::id)
+    }
+
+    /// The displays once macOS dropped the ones released here, which it does soon after a user
+    /// becomes active. Any still listed after [`RELEASE_WAIT`] are left out.
+    fn settled_displays(&self) -> screenio_core::Result<Vec<DisplayInfo>> {
+        let deadline = Instant::now() + RELEASE_WAIT;
+        loop {
+            let displays = list_displays()?;
+            let lingering = {
+                let mut state = lock(&self.state);
+                state.released.retain(|id| displays.iter().any(|d| d.id == *id));
+                state.released.clone()
+            };
+            if lingering.is_empty() {
+                return Ok(displays);
+            }
+            if Instant::now() >= deadline {
+                warn!(displays = ?lingering, "macOS still lists virtual displays released earlier; leaving them out");
+                return Ok(displays.into_iter().filter(|d| !lingering.contains(&d.id)).collect());
+            }
+            thread::sleep(RELEASE_POLL);
+        }
     }
 
     /// The id of the virtual display while it exists.
@@ -135,7 +180,7 @@ fn reap(screen: Weak<VirtualScreen>) {
             return;
         };
         let mut state = lock(&screen.state);
-        if state.streams == 0 && state.last_used.elapsed() >= GRACE && state.display.take().is_some() {
+        if state.streams == 0 && state.last_used.elapsed() >= GRACE && state.release() {
             info!(idle_secs = GRACE.as_secs(), "no session used the virtual display; removed it");
         }
     }
