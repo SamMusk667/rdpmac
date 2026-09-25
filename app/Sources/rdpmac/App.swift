@@ -130,7 +130,6 @@ struct MenuBarIcon: View {
 final class Windows {
     private struct Shown {
         let window: NSWindow
-        let sizing: NSKeyValueObservation
         let closing: NSObjectProtocol
     }
 
@@ -157,37 +156,75 @@ final class Windows {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let hosting = NSHostingController(rootView: content)
-        // By default SwiftUI sets the window's minimum and maximum size while AppKit updates
-        // constraints. When the content changes size meanwhile, as the status refresh every two
-        // seconds makes it do, AppKit gives up with an exception and the app quits. The window
-        // follows the content's size afterwards instead.
-        hosting.sizingOptions = .preferredContentSize
-        let window = NSWindow(contentViewController: hosting)
+        // AppKit must not size the window from the content while it lays the window out. With a
+        // hosting controller as the window's content, it asks SwiftUI for the content's size in
+        // its constraint passes, as minimum and maximum sizes or as the preferred content size,
+        // and SwiftUI answers by asking for another pass. Once the window has the keyboard focus
+        // on macOS 26 the passes never settle: AppKit gives up with an exception after as many
+        // passes as the window has views, and the app quits. So the content goes in a hosting
+        // view that constrains nothing, SwiftUI reports the size it needs, and the window takes
+        // that size after the layout pass that measured it.
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.measure(content)),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let hosting = NSHostingView(rootView: Measured(content: content) { [weak window] size in
+            DispatchQueue.main.async {
+                guard let window, size.width > 0, size.height > 0,
+                      window.contentRect(forFrameRect: window.frame).size != size else { return }
+                window.setContentSize(size)
+            }
+        })
+        hosting.sizingOptions = []
+        window.contentView = hosting
         window.title = title
-        window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
-        window.setContentSize(hosting.sizeThatFits(in: NSSize(width: CGFloat.infinity, height: .infinity)))
         window.center()
-        let sizing = hosting.observe(\.preferredContentSize) { [weak window] controller, _ in
-            let size = controller.preferredContentSize
-            guard size.width > 0, size.height > 0 else { return }
-            DispatchQueue.main.async { window?.setContentSize(size) }
-        }
         // A closed window is let go, so its content stops following the status.
         let closing = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main
         ) { [weak self] _ in
             DispatchQueue.main.async { self?.forget(id) }
         }
-        shown[id] = Shown(window: window, sizing: sizing, closing: closing)
+        shown[id] = Shown(window: window, closing: closing)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// The size the content asks for, measured outside any window.
+    private static func measure<Content: View>(_ content: Content) -> NSSize {
+        NSHostingController(rootView: content).sizeThatFits(in: NSSize(width: CGFloat.infinity, height: .infinity))
     }
 
     private func forget(_ id: String) {
         guard let gone = shown[id], !gone.window.isVisible else { return }
         NotificationCenter.default.removeObserver(gone.closing)
-        gone.sizing.invalidate()
         shown[id] = nil
+    }
+}
+
+/// A window's content at the size it asks for, which it reports whenever that changes.
+private struct Measured<Content: View>: View {
+    let content: Content
+    let report: (CGSize) -> Void
+
+    var body: some View {
+        content
+            .fixedSize()
+            .background(GeometryReader { proxy in
+                Color.clear.preference(key: IdealSize.self, value: proxy.size)
+            })
+            .onPreferenceChange(IdealSize.self, perform: report)
+    }
+}
+
+private struct IdealSize: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    /// Views that report no size take part as zero, so the largest size is the content's.
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        value = CGSize(width: max(value.width, next.width), height: max(value.height, next.height))
     }
 }
