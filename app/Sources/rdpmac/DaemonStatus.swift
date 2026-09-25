@@ -41,6 +41,16 @@ struct DaemonStatus: Decodable {
         let sha256: String?
     }
 
+    /// Enrollment for Network Level Authentication of the user the server runs as.
+    struct Nla: Decodable {
+        let user: String
+        let enrolled: Bool?
+        /// When the user enrolled, in seconds since 1970.
+        let since: TimeInterval?
+        /// Set when the keychain could not be read.
+        let error: String?
+    }
+
     let version: String
     let pid: Int32
     let permissions: Permissions
@@ -53,12 +63,14 @@ struct DaemonStatus: Decodable {
     let virtualDisplaysSupported: Bool
     let settings: DaemonSettings
     let certificate: Certificate
+    /// Absent when accounts are not checked with PAM, where enrollment does not apply.
+    let nla: Nla?
     let configPath: String
     let dataDir: String
     let logDir: String
 
     enum CodingKeys: String, CodingKey {
-        case version, pid, permissions, connection, displays, settings, certificate
+        case version, pid, permissions, connection, displays, settings, certificate, nla
         case restartNeeded = "restart_needed"
         case sessionSize = "session_size"
         case lastConnection = "last_connection"
@@ -73,6 +85,7 @@ struct DaemonStatus: Decodable {
 struct DaemonSettings: Codable, Equatable {
     var listen: String?
     var auth: String?
+    var security: String?
     var pamService: String?
     var codec: String?
     var clipboard: Bool?
@@ -84,7 +97,7 @@ struct DaemonSettings: Codable, Equatable {
     var key: String?
 
     enum CodingKeys: String, CodingKey {
-        case listen, auth, codec, clipboard, resolution, fps, cert, key
+        case listen, auth, security, codec, clipboard, resolution, fps, cert, key
         case pamService = "pam-service"
         case virtualDisplay = "virtual-display"
         case cursorHz = "cursor-hz"

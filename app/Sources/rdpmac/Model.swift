@@ -185,6 +185,27 @@ final class Model: ObservableObject {
         NSPasteboard.general.setString(thumbprint, forType: .string)
     }
 
+    // MARK: - Network Level Authentication
+
+    /// Enrolls the server's user for NLA; returns why it failed, or nil.
+    func enrollNla(password: String) async -> String? {
+        let result = await Task.detached { Result { try ControlClient().enrollNla(password: password) } }.value
+        refreshSoon()
+        if case .failure(let error) = result {
+            return error.localizedDescription
+        }
+        return nil
+    }
+
+    func removeNla() {
+        perform { try $0.removeNla() }
+    }
+
+    /// NLA is on, but nobody is enrolled who could sign in.
+    var nlaUnusable: Bool {
+        status?.settings.security == "nla" && status?.nla?.enrolled == false
+    }
+
     // MARK: - Logs and diagnostics
 
     func openLogs() {

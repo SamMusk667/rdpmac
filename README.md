@@ -8,11 +8,22 @@ Mac 的控制台会话。协议栈来自 IronRDP，屏幕采集、光标、键�
 crates/rdpmacd          守护进程：参数与设置文件、TLS 证书、控制套接字、装配 IronRDP 服务器
 crates/rdpmac-session   IronRDP 扩展点的实现：显示更新、虚拟显示器、光标、输入映射、剪贴板、H.264 管线
 crates/rdpmac-encode    帧到 RDP 更新的转换、VideoToolbox H.264、码率控制
-crates/rdpmac-auth      凭据校验：PAM（macOS 本地与目录账号）、静态凭据、失败锁定
+crates/rdpmac-auth      凭据校验：PAM（macOS 本地与目录账号）、静态凭据、失败锁定、NLA 凭据库（钥匙串里的 NT 哈希）
 app/                    Swift 菜单栏 App，打包后内含 rdpmacd
 scripts/                签名、安装为 LaunchAgent、打包 App 与安装器、公证
 docs/                   架构决策记录与里程碑
 ```
+
+## 构建前提
+
+NLA 需要给 IronRDP 打补丁（见 `docs/nla.md`）。补丁在与本仓库并列的 IronRDP 检出里，`Cargo.toml` 的
+`[patch.crates-io]` 按路径引用它，所以构建前要先有这个检出：
+
+```sh
+git clone https://github.com/Devolutions/IronRDP ../IronRDP   # 然后切到 rdpmac/nla 分支
+```
+
+libscreenio 同样以路径依赖放在 `../libscreenio`。
 
 ## 安装 App
 
@@ -73,12 +84,12 @@ target/release/rdpmacd --request-permissions
 
 ### 设置文件与控制套接字
 
-`~/Library/Application Support/rdpmac/config.toml` 保存设置，键名与命令行参数相同（`listen`、`auth`、`pam-service`、
+`~/Library/Application Support/rdpmac/config.toml` 保存设置，键名与命令行参数相同（`listen`、`auth`、`security`、`pam-service`、
 `codec`、`clipboard`、`resolution`、`virtual-display`、`fps`、`cursor-hz`、`cert` 与 `key`），命令行给出的值优先，
 `--config` 可以换文件。未知的键和越界的值会让启动失败并报出原因。
 
 同目录下的 `control.sock` 是给菜单栏 App 用的控制套接字，只允许同一用户连接，每行一个 JSON 请求：`status`、
-`request_permissions`、`get_config`、`set_config`、`import_certificate`、`restart`。例如：
+`request_permissions`、`get_config`、`set_config`、`import_certificate`、`nla_enroll`、`nla_remove`、`restart`。例如：
 
 ```sh
 printf '%s\n' '{"cmd":"status"}' | nc -U ~/Library/Application\ Support/rdpmac/control.sock
@@ -86,6 +97,17 @@ printf '%s\n' '{"cmd":"status"}' | nc -U ~/Library/Application\ Support/rdpmac/c
 
 导入证书要求 X.509 v3 证书和对应的私钥（PEM），旧的一对保留为 `*.previous.pem`，重启服务后生效。状态里的
 SHA-1 与 SHA-256 指纹就是 mstsc 询问是否信任时显示的指纹。
+
+### 网络级身份验证（NLA）
+
+`--security nla`（或设置里的 `security = "nla"`，App 设置中的"Require Network Level Authentication"）让客户端在
+会话建立之前先证明知道口令，服务端也要证明知道这个账号，客户端才交出口令。这样假冒的服务端拿不到口令。只接受
+支持 NLA 的客户端，mstsc 和 Windows App 默认都支持。默认仍是 `tls`。
+
+NTLM 要求服务端事先持有账号的 NT 哈希，所以用 NLA 之前要先登记：在 App 设置里输入 Mac 口令，rdpmacd 用 PAM 校验后，
+把哈希存进登录钥匙串。钥匙串只让 rdpmacd 读取这个条目。改了 Mac 口令后要重新登记。认证通过后，客户端交来的口令
+仍会经 PAM 核对；失败锁定对 NTLM 阶段的失败同样计数。`--auth static` 下 NLA 用静态口令，不需要登记。细节见
+`docs/nla.md`。
 
 ### 日志
 
@@ -121,7 +143,8 @@ sh scripts/agent.sh status          # 运行状态、参数、签名、最近日
 ## 状态
 
 里程碑进度、实测数字和待验证项见 `docs/milestones.md`。M3 的开发工作已完成：自建虚拟显示器、菜单栏 App、服务安装与卸载、
-权限引导、证书导入、设置、日志与诊断包、签名与安装器；公证脚本就绪，需要 Apple 开发者账号才能跑通。
+权限引导、证书导入、设置、日志与诊断包、签名与安装器；公证脚本就绪，需要 Apple 开发者账号才能跑通。M4 进行中：
+NLA 的凭据库模式已完成，Kerberos 模式等有 AD 域再做。
 
 已知与已发布的 IronRDP 0.13.0 相关的限制：光标形状超过 96 像素时不发送（大光标更新在 IronRDP 主分支上才有），
 水平滚轮事件没有对应变体，鼠标按键事件不带坐标（以最近一次移动为准）。

@@ -99,6 +99,15 @@ struct ControlClient {
     func restart() throws {
         _ = try send(["cmd": "restart"])
     }
+
+    /// The server checks the password with PAM before it stores the account's NT hash.
+    func enrollNla(password: String) throws {
+        _ = try send(["cmd": "nla_enroll", "password": password])
+    }
+
+    func removeNla() throws {
+        _ = try send(["cmd": "nla_remove"])
+    }
 }
 
 private struct Answer: Decodable {

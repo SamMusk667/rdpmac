@@ -42,3 +42,25 @@ serde_json = "1"
 toml = "1"
 sha1 = "0.11"
 sha2 = "0.11"
+
+# NLA needs patched ironrdp-acceptor and ironrdp-server (docs/nla.md). The patch lives on branch rdpmac/nla
+# of a local IronRDP checkout, started from the commit the published crates were built from; every IronRDP
+# crate comes from there so their types stay one set.
+[patch.crates-io]
+ironrdp-acceptor = { path = "../IronRDP/crates/ironrdp-acceptor" }
+ironrdp-ainput = { path = "../IronRDP/crates/ironrdp-ainput" }
+ironrdp-async = { path = "../IronRDP/crates/ironrdp-async" }
+ironrdp-cliprdr = { path = "../IronRDP/crates/ironrdp-cliprdr" }
+ironrdp-connector = { path = "../IronRDP/crates/ironrdp-connector" }
+ironrdp-core = { path = "../IronRDP/crates/ironrdp-core" }
+ironrdp-displaycontrol = { path = "../IronRDP/crates/ironrdp-displaycontrol" }
+ironrdp-dvc = { path = "../IronRDP/crates/ironrdp-dvc" }
+ironrdp-echo = { path = "../IronRDP/crates/ironrdp-echo" }
+ironrdp-egfx = { path = "../IronRDP/crates/ironrdp-egfx" }
+ironrdp-error = { path = "../IronRDP/crates/ironrdp-error" }
+ironrdp-graphics = { path = "../IronRDP/crates/ironrdp-graphics" }
+ironrdp-pdu = { path = "../IronRDP/crates/ironrdp-pdu" }
+ironrdp-rdpsnd = { path = "../IronRDP/crates/ironrdp-rdpsnd" }
+ironrdp-server = { path = "../IronRDP/crates/ironrdp-server" }
+ironrdp-svc = { path = "../IronRDP/crates/ironrdp-svc" }
+ironrdp-tokio = { path = "../IronRDP/crates/ironrdp-tokio" }

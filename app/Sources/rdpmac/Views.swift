@@ -27,6 +27,9 @@ struct MenuContent: View {
             } else if !model.permissionsGranted {
                 Text("Restart the server after allowing")
             }
+            if model.nlaUnusable {
+                Button("Enroll for Network Level Authentication…") { windows.showSettings(model) }
+            }
             Divider()
             Button("Settings…") { windows.showSettings(model) }
             Button("Import Certificate…") { model.importCertificate() }
@@ -147,6 +150,10 @@ struct SettingsView: View {
     @State private var h264 = true
     @State private var clipboard = true
     @State private var fps = 30
+    @State private var nla = false
+    @State private var password = ""
+    @State private var enrolling = false
+    @State private var enrollment: String?
     @State private var failure: String?
 
     var body: some View {
@@ -161,6 +168,11 @@ struct SettingsView: View {
             Toggle("Use H.264 when the client supports it", isOn: $h264)
             Toggle("Share the clipboard", isOn: $clipboard)
             Stepper("Frame rate: \(fps) per second", value: $fps, in: 5...60, step: 5)
+            Toggle("Require Network Level Authentication (NLA)", isOn: $nla)
+                .disabled(model.status?.nla == nil)
+            if let account = model.status?.nla {
+                nlaAccount(account)
+            }
             if let failure {
                 Text(failure).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
@@ -188,6 +200,7 @@ struct SettingsView: View {
             h264 = (file.codec ?? effective?.codec ?? "auto") == "auto"
             clipboard = file.clipboard ?? effective?.clipboard ?? true
             fps = file.fps ?? effective?.fps ?? 30
+            nla = (file.security ?? effective?.security ?? "tls") == "nla"
         } catch {
             failure = error.localizedDescription
         }
@@ -202,11 +215,65 @@ struct SettingsView: View {
         settings.codec = h264 ? "auto" : "remotefx"
         settings.clipboard = clipboard
         settings.fps = fps
+        settings.security = nla ? "nla" : "tls"
         do {
             try model.saveSettings(settings)
             close()
         } catch {
             failure = error.localizedDescription
+        }
+    }
+}
+
+extension SettingsView {
+    /// Clients prove the password before a session exists, against the NT hash the server keeps
+    /// for the enrolled user; it is derived from the Mac password, so enroll again after changing it.
+    @ViewBuilder
+    private func nlaAccount(_ account: DaemonStatus.Nla) -> some View {
+        if let error = account.error {
+            Text("The keychain could not be read: \(error)")
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if account.enrolled == true {
+            HStack {
+                Text(account.since.map {
+                    "\(account.user) enrolled on \(Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened))"
+                } ?? "\(account.user) is enrolled")
+                Spacer()
+                Button("Remove") { model.removeNla() }
+            }
+            Text("Enroll again after changing the Mac password.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            Text(nla
+                 ? "Enroll \(account.user) with the Mac password, or nobody can sign in."
+                 : "To use NLA, enroll \(account.user) with the Mac password first.")
+                .font(.callout)
+                .foregroundStyle(nla ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        HStack {
+            SecureField("Mac password", text: $password)
+                .onSubmit(enroll)
+            Button(account.enrolled == true ? "Enroll Again" : "Enroll", action: enroll)
+                .disabled(password.isEmpty || enrolling)
+        }
+        if let enrollment {
+            Text(enrollment).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func enroll() {
+        guard !password.isEmpty, !enrolling else { return }
+        enrolling = true
+        let entered = password
+        Task {
+            enrollment = await model.enrollNla(password: entered)
+            if enrollment == nil {
+                password = ""
+            }
+            enrolling = false
         }
     }
 }

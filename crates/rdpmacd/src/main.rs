@@ -3,6 +3,7 @@
 mod config;
 mod control;
 mod display_mode;
+mod nla;
 mod settings;
 mod status;
 mod tls;
@@ -12,7 +13,10 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{CommandFactory, FromArgMatches};
+use ironrdp_server::sspi::credssp::CredentialsProxy;
+use ironrdp_server::sspi::AuthIdentity;
 use ironrdp_server::{CredentialValidator, RdpServer, TlsIdentityCtx};
+use rdpmac_auth::nla::{NlaLookup, StaticHash};
 use rdpmac_auth::{Lockout, StaticValidator};
 use rdpmac_session::display::{DisplayHandler, FrameSource, ResolutionMode};
 use rdpmac_session::input::InputHandler;
@@ -20,7 +24,7 @@ use rdpmac_session::monitor::{FixedMonitor, MonitorPolicy, PrimaryMonitor};
 use rdpmac_session::Geometry;
 use tracing::{info, warn};
 
-use crate::config::{Args, AuthMode, Codec, Resolution, VirtualDisplay};
+use crate::config::{Args, AuthMode, Codec, Resolution, Security, VirtualDisplay};
 use crate::settings::Settings;
 
 /// Where the daemon keeps its own log files: `RDPMAC_LOG_DIR`, with a leading `~/` meaning the
@@ -95,6 +99,48 @@ fn validator(args: &Args) -> anyhow::Result<Arc<dyn CredentialValidator>> {
             #[cfg(target_os = "macos")]
             {
                 Arc::new(Lockout::new(rdpmac_auth::pam::PamValidator::new(args.pam_service.clone())))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                bail!("PAM authentication is only implemented on macOS; use --auth static")
+            }
+        }
+    })
+}
+
+type Lookup = Box<dyn CredentialsProxy<AuthenticationData = AuthIdentity> + Send>;
+
+/// For NLA: the validator for the password a client delegates, and the lookup CredSSP checks the
+/// client against before that. Both count failed logons against the same lockout.
+fn nla(args: &Args) -> anyhow::Result<(Arc<dyn CredentialValidator>, Lookup)> {
+    Ok(match args.auth {
+        AuthMode::Static => {
+            let (user, password) = match (&args.user, &args.password) {
+                (Some(u), Some(p)) => (u.clone(), p.clone()),
+                _ => bail!("--auth static needs --user and --password"),
+            };
+            warn!("static credentials in use; this mode is for development only");
+            let store = Arc::new(StaticHash::new(&user, &password));
+            let lockout = Arc::new(Lockout::new(StaticValidator::new(user, password)));
+            (lockout.clone(), Box::new(NlaLookup::new(store, lockout)))
+        }
+        AuthMode::Pam => {
+            #[cfg(target_os = "macos")]
+            {
+                use rdpmac_auth::keychain::KeychainStore;
+                let store = KeychainStore::default();
+                match store.enrolled() {
+                    Ok(enrolled) if enrolled.is_empty() => warn!(
+                        "NLA is on but no account is enrolled for it, so nobody can log on; enroll in the \
+                         rdpmac app"
+                    ),
+                    Ok(enrolled) => {
+                        info!(accounts = ?enrolled.iter().map(|e| &e.user).collect::<Vec<_>>(), "enrolled for NLA")
+                    }
+                    Err(e) => warn!(%e, "listing the accounts enrolled for NLA failed"),
+                }
+                let lockout = Arc::new(Lockout::new(rdpmac_auth::pam::PamValidator::new(args.pam_service.clone())));
+                (lockout.clone(), Box::new(NlaLookup::new(Arc::new(store), lockout)))
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -229,11 +275,22 @@ async fn main() -> anyhow::Result<()> {
     let status_geometry = geometry.clone();
     let input_handler = InputHandler::spawn(geometry);
     let tracker = Arc::new(status::Tracker::default());
-    let validator: Arc<dyn CredentialValidator> = Arc::new(status::Recorded::new(validator(&args)?, tracker.clone()));
+    let (validator, lookup) = match args.security {
+        Security::Tls => (validator(&args)?, None),
+        Security::Nla => {
+            let (validator, lookup) = nla(&args)?;
+            (validator, Some(lookup))
+        }
+    };
+    info!(security = ?args.security, "client authentication");
+    let validator: Arc<dyn CredentialValidator> = Arc::new(status::Recorded::new(validator, tracker.clone()));
 
-    let mut server = RdpServer::builder()
-        .with_addr(args.listen)
-        .with_tls(acceptor)
+    let server = RdpServer::builder().with_addr(args.listen);
+    let server = match args.security {
+        Security::Tls => server.with_tls(acceptor),
+        Security::Nla => server.with_hybrid(acceptor, identity.pub_key.clone()),
+    };
+    let mut server = server
         .with_input_handler(input_handler)
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
@@ -249,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
         }))
         .build();
+    server.set_credentials_lookup(lookup);
     let log_dir = log_dir()
         .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join("Library/Logs/rdpmac")))
         .unwrap_or_else(|| dir.clone());

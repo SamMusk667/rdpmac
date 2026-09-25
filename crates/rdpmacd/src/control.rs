@@ -2,9 +2,10 @@
 //! data directory, answered by one JSON line. Only processes of the same user may connect.
 //!
 //! Requests are `{"cmd": ...}` with `status`, `request_permissions`, `get_config`,
-//! `set_config` (`settings`: the whole file), `import_certificate` (`cert_pem`, `key_pem`) and
-//! `restart`. Every answer carries `"ok"`, and `"error"` when it is false. The status says
-//! `restart_needed` when a permission was granted after the daemon started.
+//! `set_config` (`settings`: the whole file), `import_certificate` (`cert_pem`, `key_pem`),
+//! `nla_enroll` (`password`), `nla_remove` and `restart`. Every answer carries `"ok"`, and
+//! `"error"` when it is false. The status says `restart_needed` when a permission was granted
+//! after the daemon started, and under `nla` when the user running rdpmacd enrolled for NLA.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -24,6 +25,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, info, warn};
 
+use crate::nla;
 use crate::settings::Settings;
 use crate::status::Tracker;
 
@@ -40,6 +42,9 @@ enum Command {
     GetConfig,
     SetConfig { settings: Settings },
     ImportCertificate { cert_pem: String, key_pem: String },
+    /// Checks the password of the user running rdpmacd and enrolls that user for NLA.
+    NlaEnroll { password: String },
+    NlaRemove,
     Restart,
 }
 
@@ -110,6 +115,7 @@ async fn handle(control: &Control, stream: UnixStream) -> anyhow::Result<()> {
         let (answer, restart) = match serde_json::from_str::<Command>(&line) {
             _ if too_long => (failure("request too large"), false),
             Ok(Command::Restart) => (json!({ "ok": true }), true),
+            Ok(Command::NlaEnroll { password }) => (control.enroll(password).await, false),
             Ok(command) => (control.answer(command), false),
             Err(e) => (failure(format!("bad request: {e}")), false),
         };
@@ -159,8 +165,21 @@ impl Control {
                     Err(e) => failure(format!("{e:#}")),
                 }
             }
+            Command::NlaRemove => match nla::remove() {
+                Ok(()) => json!({ "ok": true, "nla": nla::status(&self.effective) }),
+                Err(e) => failure(format!("{e:#}")),
+            },
             // Answered by `handle`, which has to exit after replying.
             Command::Restart => json!({ "ok": true }),
+            // Answered by `handle`, since checking the password takes a while.
+            Command::NlaEnroll { .. } => failure("enrollment is answered asynchronously"),
+        }
+    }
+
+    async fn enroll(&self, password: String) -> Value {
+        match nla::enroll(&self.effective, &password).await {
+            Ok(()) => json!({ "ok": true, "nla": nla::status(&self.effective) }),
+            Err(e) => failure(format!("{e:#}")),
         }
     }
 
@@ -191,6 +210,7 @@ impl Control {
             "started": self.started,
             "permissions": permissions(&info),
             "restart_needed": granted_since_start(&self.permissions_at_start, &info),
+            "nla": nla::status(&self.effective),
             "connection": connection,
             "session_size": connection.as_ref().map(|_| [size.width, size.height]),
             "last_connection": self.tracker.last(),

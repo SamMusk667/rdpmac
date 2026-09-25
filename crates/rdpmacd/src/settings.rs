@@ -11,7 +11,7 @@ use clap::parser::ValueSource;
 use clap::ArgMatches;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Args, AuthMode, Codec, Resolution, VirtualDisplay};
+use crate::config::{Args, AuthMode, Codec, Resolution, Security, VirtualDisplay};
 
 const HEADER: &str = "# rdpmacd settings. Flags on the command line override them; restart rdpmacd to apply.\n\n";
 
@@ -23,6 +23,8 @@ pub struct Settings {
     pub listen: Option<SocketAddr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Security>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pam_service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +107,9 @@ impl Settings {
         if let (Some(v), true) = (self.auth, unset("auth")) {
             args.auth = v;
         }
+        if let (Some(v), true) = (self.security, unset("security")) {
+            args.security = v;
+        }
         if let (Some(v), true) = (&self.pam_service, unset("pam_service")) {
             args.pam_service = v.clone();
         }
@@ -139,6 +144,7 @@ impl Settings {
         Self {
             listen: Some(args.listen),
             auth: Some(args.auth),
+            security: Some(args.security),
             pam_service: Some(args.pam_service.clone()),
             codec: Some(args.codec),
             clipboard: Some(!args.no_clipboard),
@@ -170,6 +176,7 @@ mod tests {
         toml::from_str(
             r#"
             listen = "127.0.0.1:4000"
+            security = "nla"
             clipboard = false
             resolution = "native"
             virtual-display = "off"
@@ -184,6 +191,7 @@ mod tests {
         let (mut args, matches) = parse(&["--fps", "60"]);
         sample().apply(&mut args, &matches);
         assert_eq!(args.listen, "127.0.0.1:4000".parse().expect("address"));
+        assert_eq!(args.security, Security::Nla);
         assert!(args.no_clipboard);
         assert_eq!(args.resolution, Resolution::Native);
         assert_eq!(args.virtual_display, VirtualDisplay::Off);

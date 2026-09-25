@@ -172,3 +172,9 @@ rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进�
 | 7 | 审计与会话录制接口 | 不涉及 | 结构化审计记录（来源、账号、方式、结果、时长）；录制只定义接口 |
 | 8 | 登录窗口会话 | 不涉及 | 调研报告，不实现 |
 | 9 | RemoteFX progressive | graphics 有 progressive 相关代码，编码器是否完整待查 | 优先级最低，H.264 已覆盖现代客户端 |
+
+进度：
+
+- 2026-09-24 NLA 凭据库模式完成，设计、实现与测试见 `docs/nla.md`。IronRDP 补丁在 `~/works/IronRDP` 的 `rdpmac/nla`
+  分支上，还没提交上游；NT 哈希存在登录钥匙串，在 App 里登记；设置 `security = "nla"` 开启。本机回环（FreeRDP
+  sfreerdp）已测过正确口令、错误口令、未登记账号、只支持 TLS 的客户端和失败锁定，待 mstsc 实测。Kerberos 要等有 AD 域再做。

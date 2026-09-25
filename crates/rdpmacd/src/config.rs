@@ -15,6 +15,18 @@ pub enum AuthMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum Security {
+    /// TLS: the client sends the password inside the encrypted connection and the account check
+    /// happens once the session is set up.
+    Tls,
+    /// Network Level Authentication: the client proves it knows the password before a session
+    /// exists and hands it over only once rdpmacd proved it knows the account too. Only accounts
+    /// enrolled for it can log on, and clients without NLA are turned away.
+    Nla,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Resolution {
     /// The size the client asks for (mstsc /w /h, full screen, window resizing); the display is
     /// scaled to it when the two differ.
@@ -79,6 +91,10 @@ pub struct Args {
 
     #[arg(long, value_enum, default_value_t = AuthMode::Pam)]
     pub auth: AuthMode,
+
+    /// How clients authenticate.
+    #[arg(long, value_enum, default_value_t = Security::Tls)]
+    pub security: Security,
 
     /// PAM service to authenticate against.
     #[arg(long, default_value = "checkpw")]
