@@ -135,10 +135,10 @@ fn copy_cstr(dst: &mut [c_char], src: &str) {
     dst[n] = 0;
 }
 
-/// The library version as 0xMMmmpp: 0x010000 is 1.0.0.
+/// The library version as 0xMMmmpp: 0x010100 is 1.1.0.
 #[no_mangle]
 pub extern "C" fn sio_version() -> u32 {
-    0x01_00_00
+    0x01_01_00
 }
 
 #[no_mangle]
@@ -505,6 +505,30 @@ pub extern "C" fn sio_open_privacy_settings(pane: u32) -> i32 {
     };
     guard(|| match sio::open_privacy_settings(pane) {
         Ok(()) => SIO_OK,
+        Err(e) => code(e),
+    })
+}
+
+/// Tells the OS a user is at work, as a key press would: the display wakes, idle timers restart,
+/// and a locked macOS screen starts the flow that checks its password. Injected input does not do
+/// all of this, so a remote-desktop server calls it when a session starts and while remote input
+/// arrives. Since 1.1.
+#[no_mangle]
+pub extern "C" fn sio_declare_user_activity() -> i32 {
+    guard(|| match sio::declare_user_activity() {
+        Ok(()) => SIO_OK,
+        Err(e) => code(e),
+    })
+}
+
+/// Declares user activity, then waits up to `timeout_ms` for a display to be awake: `SIO_OK` once
+/// one is, `SIO_E_TIMEOUT` when none woke in time. Since 1.1.
+#[no_mangle]
+pub extern "C" fn sio_wake_displays(timeout_ms: u32) -> i32 {
+    let timeout = Duration::from_millis(u64::from(timeout_ms));
+    guard(|| match sio::wake_displays(timeout) {
+        Ok(true) => SIO_OK,
+        Ok(false) => SIO_E_TIMEOUT,
         Err(e) => code(e),
     })
 }

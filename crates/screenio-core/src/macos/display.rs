@@ -19,6 +19,13 @@ extern "C" {
     fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
 }
 
+/// Whether any display is awake.
+pub fn any_active() -> Result<bool> {
+    Ok(!CGDisplay::active_displays()
+        .map_err(|_| Error::Os)?
+        .is_empty())
+}
+
 /// Displays that are connected but asleep are not "active"; list them anyway so a server can
 /// keep addressing a display whose panel has been powered down.
 fn online_displays() -> Result<Vec<u32>> {

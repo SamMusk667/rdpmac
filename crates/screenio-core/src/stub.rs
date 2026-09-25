@@ -34,6 +34,14 @@ pub fn switch_display_mode(_display_id: u32, _width: u32, _height: u32) -> Resul
     Err(Error::Unsupported)
 }
 
+pub fn declare_user_activity() -> Result<()> {
+    Err(Error::Unsupported)
+}
+
+pub fn wake_displays(_timeout: Duration) -> Result<bool> {
+    Err(Error::Unsupported)
+}
+
 pub struct Capturer;
 
 impl Capturer {

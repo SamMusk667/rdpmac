@@ -21,6 +21,7 @@ crates/screenio/          C ABI，include/screenio.h，examples/c 是纯 C 的�
 | 光标 | `NSCursor.currentSystemCursor` 的位图与热点；`CGEventGetLocation` | `objc2-app-kit`、原生 extern |
 | 键鼠注入 | `CGEventCreateKeyboardEvent` / `CGEventCreateMouseEvent` / `CGEventCreateScrollWheelEvent`，HID 层投递 | `core-graphics` |
 | 权限 | `CGPreflightScreenCaptureAccess`、`AXIsProcessTrusted` | 原生 extern |
+| 用户活动 | IOKit：`IOPMAssertionDeclareUserActivity` | 原生 extern |
 
 不使用已被 Apple 弃用的 CGDisplayStream，不依赖旧的 `objc` 0.2 / `block` 0.1；对象模型走 `objc2` 0.6 生态
 （`objc2`、`block2`、`dispatch2` 及各框架绑定）。
@@ -56,6 +57,11 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   另一个进程里做，执行切换的进程会一直占住这块显示器，让它不再响应改尺寸。C 接口没有这一步，`resize` 返回错误，
   显示器保留系统选定的尺寸。
 * 光标形状带 `scale`，即位图像素与点之比，调用方按会话缩放光标时用它。
+* 用户活动：注入的键鼠事件在 macOS 看来不完全算用户活动。休眠的显示器不会被它唤醒，已释放的虚拟显示器会一直
+  留在列表里。锁屏会显示口令框，但它的解锁流程只在用户变为活动时启动；没启动时，任何口令都不校验、直接判错。
+  `declare_user_activity`（C 接口 `sio_declare_user_activity`）的效果与 `caffeinate -u` 相同，远程桌面服务在
+  会话开始时和收到远程输入时调用它。`wake_displays`（`sio_wake_displays`）声明活动后，等到有显示器醒来再返回。
+  两者从 1.1 起提供。
 * 权限引导：`open_privacy_settings`（C 接口 `sio_open_privacy_settings`）打开"隐私与安全性"里屏幕录制或辅助功能那一页；
   `request_permissions` 负责把进程加进这两个列表。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。

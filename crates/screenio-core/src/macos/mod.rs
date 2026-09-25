@@ -3,6 +3,7 @@ mod cursor;
 mod display;
 mod input;
 mod keymap;
+mod power;
 mod session;
 mod virtual_display;
 
@@ -10,5 +11,6 @@ pub use capture::Capturer;
 pub use cursor::{cursor_position, cursor_shape, cursor_shape_id};
 pub use display::list_displays;
 pub use input::Input;
+pub use power::{declare_user_activity, wake_displays};
 pub use session::{open_privacy_settings, request_permissions, session_info};
 pub use virtual_display::{switch_display_mode, VirtualDisplay};

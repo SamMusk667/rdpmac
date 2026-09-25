@@ -170,6 +170,20 @@ pub fn switch_display_mode(display_id: u32, width: u32, height: u32) -> Result<(
     platform::switch_display_mode(display_id, width, height)
 }
 
+/// Tells the OS a user is at work, as a key press would: the display wakes, idle timers restart,
+/// and a locked macOS screen starts the flow that checks its password. Input injected through
+/// [`Input`] does not do all of this, so a remote-desktop server calls it when a session starts
+/// and while remote input arrives.
+pub fn declare_user_activity() -> Result<()> {
+    platform::declare_user_activity()
+}
+
+/// Declares user activity and waits up to `timeout` for a display to be awake. False when none
+/// woke in time.
+pub fn wake_displays(timeout: Duration) -> Result<bool> {
+    platform::wake_displays(timeout)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CursorPosition {
     pub x: i32,

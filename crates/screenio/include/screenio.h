@@ -126,7 +126,7 @@ typedef struct sio_session_info_t {
 extern "C" {
 #endif // __cplusplus
 
-// The library version as 0xMMmmpp: 0x010000 is 1.0.0.
+// The library version as 0xMMmmpp: 0x010100 is 1.1.0.
 uint32_t sio_version(void);
 
 const char *sio_strerror(int32_t err);
@@ -208,6 +208,16 @@ int32_t sio_session_request_permissions(struct sio_session_info_t *out);
 
 // Opens the System Settings pane where the user switches a permission on.
 int32_t sio_open_privacy_settings(uint32_t pane);
+
+// Tells the OS a user is at work, as a key press would: the display wakes, idle timers restart,
+// and a locked macOS screen starts the flow that checks its password. Injected input does not do
+// all of this, so a remote-desktop server calls it when a session starts and while remote input
+// arrives. Since 1.1.
+int32_t sio_declare_user_activity(void);
+
+// Declares user activity, then waits up to `timeout_ms` for a display to be awake: `SIO_OK` once
+// one is, `SIO_E_TIMEOUT` when none woke in time. Since 1.1.
+int32_t sio_wake_displays(uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }  // extern "C"
