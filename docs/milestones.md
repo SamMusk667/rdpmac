@@ -155,3 +155,20 @@ M3 还需要你来完成的：
 4K 的实测（2026-09-24）：新的显示器身份请求 3840x2160 时，两次设置都停在 1920x1080（约 3.3 秒），辅助进程切换后
 成功，总计约 3.6 秒；之后同一身份的显示器直接得到 4K（约 0.3 秒），改到 2560x1600、1920x1080 再回 4K 都正常。
 rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进程切换后按 4K 建好显示器，再以 2560x1600 连入时原地改尺寸。
+
+## M4 企业能力（计划，2026-09-24）
+
+范围来自 ADR 第 4 节，验收是域账号与独立账号都能走 NLA、企业安全问卷可回答。按风险与依赖排序，先做会改动 IronRDP
+的 NLA：
+
+| 顺序 | 项 | IronRDP 0.13 现状 | 要做的 |
+|---|---|---|---|
+| 1 | NLA：凭据库（独立 Mac）与 Kerberos（加入域的 Mac） | 有 `RdpServerSecurity::Hybrid` 与 CredSSP 服务端；NTLM 只认一个预先给定的账号与口令，Kerberos 可传 `KerberosServerConfig`；认证后客户端委派口令 | 给 acceptor 加可插拔的凭据查找，按 ADR 第 6 节用 `[patch.crates-io]` 指向本地 IronRDP 检出，之后提交上游；凭据库在登记时经 PAM 校验、把每用户的 NT 哈希存进钥匙串；Kerberos 用 keytab 里的服务密钥；委派来的口令再经 PAM 校验 |
+| 2 | AVC444 | 图形管线有 AVC444 能力位 | 拆成亮度与色度两路 4:2:0，VideoToolbox 编两路，去掉彩色文字的色边 |
+| 3 | 声音 | 有 `with_sound_factory` 与 RDPSND 服务端 | libscreenio 加系统声音采集（ScreenCaptureKit 音频），协商 PCM 或 AAC |
+| 4 | 剪贴板图片与文件 | cliprdr 有 FileContents 请求与响应 | 图片双向；文件用 FileGroupDescriptorW 加按需读取 |
+| 5 | 物理显示器切换模式（D8 第 3 步，默认关闭） | 不涉及 | 用 libscreenio 的 `switch_display_mode` 经辅助进程切换，会话结束恢复原模式 |
+| 6 | MDM 托管配置 | 不涉及 | 读取配置描述文件下发的托管偏好，优先于 config.toml，文档列出全部键 |
+| 7 | 审计与会话录制接口 | 不涉及 | 结构化审计记录（来源、账号、方式、结果、时长）；录制只定义接口 |
+| 8 | 登录窗口会话 | 不涉及 | 调研报告，不实现 |
+| 9 | RemoteFX progressive | graphics 有 progressive 相关代码，编码器是否完整待查 | 优先级最低，H.264 已覆盖现代客户端 |
