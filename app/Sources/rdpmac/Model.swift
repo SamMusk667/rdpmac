@@ -24,9 +24,17 @@ final class Model: ObservableObject {
     /// macOS applies a permission to the running server only after it restarts.
     var restartNeeded: Bool { status?.restartNeeded == true }
 
-    var symbol: String {
-        guard let status, permissionsGranted else { return "exclamationmark.triangle" }
-        return status.connection == nil ? "display" : "person.crop.rectangle"
+    var menuIcon: MenuIcon {
+        switch server {
+        case .off: return .paused
+        case .needsApproval: return .attention
+        case .on: break
+        }
+        guard let status else { return .host }
+        if !permissionsGranted || nlaUnusable {
+            return .attention
+        }
+        return status.connection == nil ? .ready : .active
     }
 
     var headline: String {

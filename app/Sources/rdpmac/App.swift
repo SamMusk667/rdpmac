@@ -38,7 +38,7 @@ struct RdpMacApp: App {
         MenuBarExtra {
             MenuContent(model: delegate.model, windows: delegate.windows)
         } label: {
-            MenuIcon(model: delegate.model)
+            MenuBarIcon(model: delegate.model)
         }
     }
 }
@@ -57,11 +57,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct MenuIcon: View {
+/// The menu-bar icon's states, drawn as template images in app/Icons/menu.
+enum MenuIcon {
+    /// No status yet: the server is starting.
+    case host
+    /// Listening, nobody connected.
+    case ready
+    /// A client is connected.
+    case active
+    /// The server is off.
+    case paused
+    /// Something needs the user: a permission, approval in Login Items, an NLA enrollment.
+    case attention
+
+    private var imageName: String {
+        switch self {
+        case .host: return "HostTemplate"
+        case .ready: return "ReadyTemplate"
+        case .active: return "ActiveTemplate"
+        case .paused: return "PausedTemplate"
+        case .attention: return "ErrorTemplate"
+        }
+    }
+
+    /// The template image from the app's resources; nil in a build without them.
+    var image: NSImage? {
+        guard let image = NSImage(named: imageName) else { return nil }
+        image.isTemplate = true
+        return image
+    }
+
+    /// For a build without the icons, such as `swift run`.
+    var symbol: String {
+        switch self {
+        case .host, .ready: return "display"
+        case .active: return "person.crop.rectangle"
+        case .paused: return "pause.circle"
+        case .attention: return "exclamationmark.triangle"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .host: return "rdpmac is starting"
+        case .ready: return "rdpmac is waiting for connections"
+        case .active: return "A client is connected to rdpmac"
+        case .paused: return "rdpmac is off"
+        case .attention: return "rdpmac needs attention"
+        }
+    }
+}
+
+struct MenuBarIcon: View {
     @ObservedObject var model: Model
 
     var body: some View {
-        Image(systemName: model.symbol)
+        let icon = model.menuIcon
+        Group {
+            if let image = icon.image {
+                Image(nsImage: image)
+            } else {
+                Image(systemName: icon.symbol)
+            }
+        }
+        .accessibilityLabel(icon.label)
     }
 }
 

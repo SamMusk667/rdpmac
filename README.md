@@ -9,7 +9,7 @@ crates/rdpmacd          守护进程：参数与设置文件、TLS 证书、控�
 crates/rdpmac-session   IronRDP 扩展点的实现：显示更新、虚拟显示器、光标、输入映射、剪贴板、H.264 管线
 crates/rdpmac-encode    帧到 RDP 更新的转换、VideoToolbox H.264、码率控制
 crates/rdpmac-auth      凭据校验：PAM（macOS 本地与目录账号）、静态凭据、失败锁定、NLA 凭据库（钥匙串里的 NT 哈希）
-app/                    Swift 菜单栏 App，打包后内含 rdpmacd
+app/                    Swift 菜单栏 App，打包后内含 rdpmacd；app/Icons 是图标设计稿
 scripts/                签名、安装为 LaunchAgent、打包 App 与安装器、公证
 docs/                   架构决策记录与里程碑
 ```
@@ -34,7 +34,12 @@ sh scripts/build-app.sh --pkg       # 得到 build/rdpmac.app 与 build/rdpmac-V
 
 安装器把 rdpmac.app 装进"应用程序"并打开它。欢迎窗口带着走完三步：打开服务、允许"录屏与系统录音"、允许
 "辅助功能"，然后显示客户端要连接的地址和证书指纹。菜单栏图标里有状态、当前连接、设置、证书导入、重启服务、
-日志和诊断包。
+日志和诊断包。图标右下角的标记表示状态：空心圆是在等连接，实心圆是有客户端连着，双竖线是服务关着，叹号是需要处理
+（缺权限、等登录项批准、开了 NLA 却没登记），没有标记是服务正在启动。
+
+图标来自 `app/Icons`（设计稿 V2，说明见其中的 README）。打包时 `scripts/icons.swift` 从 `app/app-light.png` 按 macOS
+图标的圆角方形和投影生成 AppIcon.icns，把 `menu/*.svg` 转成矢量 PDF 作菜单栏模板图；换设计稿只需替换这个目录。
+深色母稿 `app-dark.png` 暂未使用，等做 Icon Composer 的 .icon 时用。
 
 - 服务由 launchd 在登录会话里运行，崩溃后自动重启。用 Developer ID 签名、带 Team ID 的 App 通过 SMAppService
   注册服务；没有 Team ID 的构建（开发构建、自行编译的免费版）改用 `~/Library/LaunchAgents` 里的经典 LaunchAgent，

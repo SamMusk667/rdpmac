@@ -41,8 +41,15 @@ cargo build --release -p rdpmacd --manifest-path "$root/Cargo.toml"
 (cd "$root/app" && swift build -c release)
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Library/LaunchAgents"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Library/LaunchAgents"
 cp "$root/app/.build/release/rdpmac" "$app/Contents/MacOS/rdpmac"
+# The app icon and the menu-bar templates come from the designs in app/Icons.
+icons="$out/icons"
+rm -rf "$icons"
+swift "$root/scripts/icons.swift" "$root/app/Icons" "$icons"
+iconutil -c icns "$icons/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
+cp "$icons"/*Template.pdf "$app/Contents/Resources/"
+rm -rf "$icons"
 cp "$root/target/release/rdpmacd" "$app/Contents/MacOS/rdpmacd"
 sed "s/@VERSION@/$version/g" "$root/app/Bundle/Info.plist" >"$app/Contents/Info.plist"
 cp "$root/app/Bundle/com.rdpmac.rdpmacd.plist" "$app/Contents/Library/LaunchAgents/"
