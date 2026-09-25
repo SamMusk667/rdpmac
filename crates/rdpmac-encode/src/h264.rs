@@ -1,4 +1,4 @@
-//! H.264 encoding with VideoToolbox for the graphics pipeline's AVC420 codec.
+//! H.264 encoding with VideoToolbox for the graphics pipeline's AVC420 and AVC444 codecs.
 //!
 //! One encoder serves one session size. Frames go in as BGRA and come out as H.264 access units
 //! in Annex B form (start codes), with SPS and PPS in front of every key frame so a client can
@@ -9,6 +9,13 @@
 //! Where the hardware supports it, the session runs in VideoToolbox's low-latency mode and takes
 //! a quantiser with every frame from [`QpControl`]; elsewhere VideoToolbox's own rate control
 //! runs. Either way [`H264Encoder::refine`] sharpens a picture that has stopped changing.
+//!
+//! An AVC444 encoder encodes every picture twice, as the main view (the picture in 4:2:0) and the
+//! auxiliary view (the chroma the main view leaves out, see [`avc444`]), one after the other in
+//! one stream, and the client combines them. The hardware predicts a frame from the frame before
+//! it, which for either view is the other view and looks nothing like it. Instead every view is
+//! made a long-term reference, and the next view of its kind acknowledges it and refreshes from
+//! it, so each view costs what changed since the last one of its kind.
 
 use std::ffi::{c_int, c_void};
 use std::fmt;
@@ -16,7 +23,7 @@ use std::ptr::{self, NonNull};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
     kCMSampleAttachmentKey_NotSync, kCMTimeInvalid, kCMVideoCodecType_H264, CMSampleBuffer, CMTime,
     CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
@@ -29,16 +36,20 @@ use objc2_core_video::{
 };
 use objc2_video_toolbox::{
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
-    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxKeyFrameInterval,
-    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
-    kVTCompressionPropertyKey_ReferenceBufferCount, kVTCompressionPropertyKey_SupportsBaseFrameQP, kVTEncodeFrameOptionKey_BaseFrameQP,
-    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_Main_AutoLevel,
+    kVTCompressionPropertyKey_EnableLTR, kVTCompressionPropertyKey_ExpectedFrameRate,
+    kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel,
+    kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_ReferenceBufferCount,
+    kVTCompressionPropertyKey_SupportsBaseFrameQP, kVTEncodeFrameOptionKey_AcknowledgedLTRTokens,
+    kVTEncodeFrameOptionKey_BaseFrameQP, kVTEncodeFrameOptionKey_ForceKeyFrame,
+    kVTEncodeFrameOptionKey_ForceLTRRefresh, kVTProfileLevel_H264_Main_AutoLevel,
+    kVTSampleAttachmentKey_RequireLTRAcknowledgementToken,
     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
     kVTVideoEncoderSpecification_EnableLowLatencyRateControl, VTCompressionSession, VTEncodeInfoFlags,
     VTSessionCopyProperty, VTSessionSetProperty,
 };
 
-use crate::color::{Converter, Nv12Planes};
+use crate::avc444;
+use crate::color::{Converter, Converter444, Nv12Planes};
 use crate::quantiser::QpControl;
 
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
@@ -53,6 +64,10 @@ const REFINE_AFTER: Duration = Duration::from_millis(200);
 /// Reference frames the low-latency session may keep. Left alone it declares twelve, the
 /// picture buffer mstsc disconnected on at 1920x1200; limited to one it sends only key frames.
 const LOW_LATENCY_REFERENCES: i32 = 2;
+/// Reference frames of an AVC444 session. Two chains of long-term references need four: with
+/// three VideoToolbox makes only every other frame one, with two none. The levels it declares
+/// allow four at every size measured, from 1280x720 to 4096x2304.
+const LTR_REFERENCES: i32 = 4;
 /// Without quantiser control, refinement re-encodes the picture this many times, each with the
 /// bitrate raised by `REFINE_BOOST`; a larger boost measured the same.
 const BOOSTED_REFINEMENTS: u32 = 3;
@@ -75,18 +90,100 @@ fn fail(what: &str, status: i32) -> EncodeError {
 
 /// One encoded frame.
 pub struct EncodedFrame {
-    /// Annex B byte stream: start code, NAL unit, start code, NAL unit...
+    /// Annex B byte stream: start code, NAL unit, start code, NAL unit... For AVC444, the main
+    /// view's.
     pub data: Vec<u8>,
+    /// AVC444's auxiliary view, in the same form. `None` from an AVC420 encoder, and on the rare
+    /// frame whose auxiliary view VideoToolbox dropped, which a client then shows in 4:2:0.
+    pub auxiliary: Option<Vec<u8>>,
     pub key_frame: bool,
     /// The base quantiser, when the encoder chose it.
     pub qp: Option<i32>,
+}
+
+impl EncodedFrame {
+    /// The size of the bitstreams.
+    pub fn bytes(&self) -> usize {
+        self.data.len() + self.auxiliary.as_ref().map_or(0, Vec::len)
+    }
+}
+
+/// The two views of a picture in AVC444 (MS-RDPEGFX 3.3.8.3.3), each a frame of the stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Main,
+    Auxiliary,
 }
 
 /// Where the output callback leaves its result for the thread that called `encode`.
 #[derive(Default)]
 struct Sink {
     output: Option<EncodedFrame>,
+    /// The long-term reference token VideoToolbox gave the output.
+    token: Option<i64>,
     error: Option<i32>,
+}
+
+/// What an AVC444 encoder keeps besides an AVC420 one.
+struct Avc444 {
+    converter: Converter444,
+    /// The auxiliary view of the encoder's newest picture, whose main view is `latest`.
+    auxiliary: Option<CFRetained<CVPixelBuffer>>,
+    /// The long-term reference tokens of the last main and auxiliary views.
+    main_token: Option<i64>,
+    auxiliary_token: Option<i64>,
+    /// Frames encoded so far, which are the presentation times, `fps` a second. VideoToolbox
+    /// drops a long-term reference still unacknowledged five frame intervals after it, as it
+    /// reckons them from presentation times, and in real time a refinement comes that long after
+    /// the frame before.
+    frames: i64,
+    fps: i32,
+}
+
+impl Avc444 {
+    fn new(fps: i32) -> Result<Self, EncodeError> {
+        let converter = Converter444::new().ok_or_else(|| EncodeError("vImage has no BT.709 4:4:4 conversion".into()))?;
+        Ok(Self {
+            converter,
+            auxiliary: None,
+            main_token: None,
+            auxiliary_token: None,
+            frames: 0,
+            fps,
+        })
+    }
+
+    fn next_time(&mut self) -> CMTime {
+        self.frames += 1;
+        // SAFETY: CMTimeMake only builds a value.
+        unsafe { CMTime::new(self.frames, self.fps) }
+    }
+
+    /// Converts a frame into its main and auxiliary views, a band of rows at a time, so that the
+    /// 4:4:4 chroma never needs planes of the full size.
+    ///
+    /// # Safety
+    /// `main` and `auxiliary` must describe writable NV12 pictures of `size`.
+    unsafe fn convert(&mut self, bgra: &[u8], stride: usize, size: (usize, usize), main: &Nv12Planes, auxiliary: &Nv12Planes) -> bool {
+        self.converter.convert(bgra, stride, size, (main.y, main.y_stride), |top, band| {
+            // Bands start on even rows, so a band's chroma rows start at half its first row.
+            avc444::write_main_chroma(band, main.cbcr.add(top / 2 * main.cbcr_stride), main.cbcr_stride);
+            let auxiliary = Nv12Planes {
+                y: auxiliary.y.add(top * auxiliary.y_stride),
+                y_stride: auxiliary.y_stride,
+                cbcr: auxiliary.cbcr.add(top / 2 * auxiliary.cbcr_stride),
+                cbcr_stride: auxiliary.cbcr_stride,
+            };
+            avc444::write_aux(band, &auxiliary);
+        })
+    }
+
+    fn token(&mut self, view: View) -> &mut Option<i64> {
+        match view {
+            View::Main => &mut self.main_token,
+            View::Auxiliary => &mut self.auxiliary_token,
+        }
+    }
 }
 
 /// Who decides how coarsely a frame is quantised.
@@ -117,6 +214,7 @@ pub struct H264Encoder {
     latest: Option<CFRetained<CVPixelBuffer>>,
     unsent: bool,
     changed_at: Instant,
+    avc444: Option<Box<Avc444>>,
 }
 
 // The session is only driven from the thread that owns the encoder; VideoToolbox calls the
@@ -125,17 +223,35 @@ unsafe impl Send for H264Encoder {}
 
 impl H264Encoder {
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+        Self::open(width, height, fps, false)
+    }
+
+    /// An encoder for AVC444v2, whose frames carry both views of the picture. It needs a size
+    /// that [`avc444::fits`] and the low-latency session with long-term references; where either
+    /// is missing, AVC420 is what is left.
+    pub fn new_avc444(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+        if !avc444::fits(width, height) {
+            return Err(EncodeError(format!("{width}x{height} does not fit the AVC444 layout")));
+        }
+        Self::open(width, height, fps, true)
+    }
+
+    fn open(width: u32, height: u32, fps: u32, avc444: bool) -> Result<Self, EncodeError> {
         if width == 0 || height == 0 {
             return Err(EncodeError("empty frame size".into()));
         }
         let fps = fps.clamp(1, 120) as i32;
         let sink = Box::new(Mutex::new(Sink::default()));
         let converter = Converter::new().ok_or_else(|| EncodeError("vImage has no BT.709 conversion".into()))?;
+        let avc444 = if avc444 { Some(Box::new(Avc444::new(fps)?)) } else { None };
         let bitrate = target_bitrate(width, height, fps as u32);
         let now = Instant::now();
 
-        let (session, control) = match quantiser_session(width, height, &sink) {
+        let (session, control) = match quantiser_session(width, height, &sink, avc444.is_some()) {
             Some(session) => (session, Control::Quantiser(QpControl::new(bitrate, now))),
+            None if avc444.is_some() => {
+                return Err(EncodeError("no low-latency encoder with long-term references for AVC444".into()))
+            }
             None => {
                 let session = open_session(width, height, false, &sink)?;
                 let control = Control::Bitrate {
@@ -178,11 +294,17 @@ impl H264Encoder {
             latest: None,
             unsent: false,
             changed_at: now,
+            avc444,
         })
     }
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Whether the encoder makes AVC444's views rather than AVC420 frames.
+    pub fn avc444(&self) -> bool {
+        self.avc444.is_some()
     }
 
     /// The bitrate chosen for this size and frame rate, in bits per second.
@@ -294,13 +416,37 @@ impl H264Encoder {
         encoded
     }
 
-    /// Encodes one picture, with `qp` as its base quantiser in low-latency mode.
+    /// Encodes one picture, with `qp` as its base quantiser in low-latency mode; for AVC444,
+    /// both of its views.
     fn submit(&mut self, pixels: &CVPixelBuffer, qp: Option<i32>) -> Result<Option<EncodedFrame>, EncodeError> {
-        let force_key = self.key_frame_requested;
+        let Some(mut frame) = self.encode_view(pixels, qp, View::Main)? else {
+            return Ok(None);
+        };
+        if let Some(auxiliary) = self.avc444.as_ref().and_then(|a| a.auxiliary.clone()) {
+            frame.auxiliary = self.encode_view(&auxiliary, qp, View::Auxiliary)?.map(|view| view.data);
+        }
+        let now = Instant::now();
+        if frame.key_frame {
+            self.key_frame_requested = false;
+            self.last_key_frame = now;
+        }
+        if let (Control::Quantiser(control), Some(qp)) = (&mut self.control, qp) {
+            control.record(qp, frame.bytes(), now);
+        }
+        frame.qp = qp;
+        Ok(Some(frame))
+    }
+
+    /// Encodes one frame of the stream: a picture, or one of an AVC444 picture's views, which
+    /// refreshes from the last view of its kind.
+    fn encode_view(&mut self, pixels: &CVPixelBuffer, qp: Option<i32>, view: View) -> Result<Option<EncodedFrame>, EncodeError> {
+        let force_key = self.key_frame_requested && view == View::Main;
+        let reference = self.avc444.as_mut().and_then(|a| *a.token(view)).filter(|_| !force_key);
         let yes = CFBoolean::new(true);
         let quantiser = qp.map(CFNumber::new_i32);
-        let mut keys: Vec<&CFString> = Vec::with_capacity(2);
-        let mut values: Vec<&CFType> = Vec::with_capacity(2);
+        let acknowledged = reference.map(|token| CFArray::from_retained_objects(&[CFNumber::new_i64(token)]));
+        let mut keys: Vec<&CFString> = Vec::with_capacity(4);
+        let mut values: Vec<&CFType> = Vec::with_capacity(4);
         if force_key {
             keys.push(unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame });
             values.push(yes.as_ref());
@@ -309,11 +455,23 @@ impl H264Encoder {
             keys.push(unsafe { kVTEncodeFrameOptionKey_BaseFrameQP });
             values.push(quantiser.as_ref());
         }
+        if let Some(acknowledged) = &acknowledged {
+            // Acknowledged just before it is needed, the reference is the newest acknowledged
+            // one, which is what a refresh predicts from.
+            keys.push(unsafe { kVTEncodeFrameOptionKey_AcknowledgedLTRTokens });
+            values.push(acknowledged.as_ref());
+            keys.push(unsafe { kVTEncodeFrameOptionKey_ForceLTRRefresh });
+            values.push(yes.as_ref());
+        }
         let options = (!keys.is_empty()).then(|| CFDictionary::<CFString, CFType>::from_slices(&keys, &values));
+        let time = match self.avc444.as_mut() {
+            Some(avc444) => avc444.next_time(),
+            None => unsafe { CMTime::new(self.started.elapsed().as_micros() as i64, 1_000_000) },
+        };
         let status = unsafe {
             self.session.encode_frame(
                 pixels,
-                CMTime::new(self.started.elapsed().as_micros() as i64, 1_000_000),
+                time,
                 kCMTimeInvalid,
                 options.as_deref().map(|o| o.as_opaque()),
                 ptr::null_mut(),
@@ -327,35 +485,62 @@ impl H264Encoder {
         if status != 0 {
             return Err(fail("VTCompressionSessionCompleteFrames", status));
         }
-        let mut output = {
+        let (output, token) = {
             let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(status) = sink.error.take() {
                 return Err(fail("encoding", status));
             }
-            sink.output.take()
+            (sink.output.take(), sink.token.take())
         };
-        if let Some(frame) = output.as_mut() {
-            let now = Instant::now();
+        if let (Some(frame), Some(avc444)) = (&output, self.avc444.as_mut()) {
+            // A key frame leaves nothing to refresh from.
             if frame.key_frame {
-                self.key_frame_requested = false;
-                self.last_key_frame = now;
+                avc444.main_token = None;
+                avc444.auxiliary_token = None;
             }
-            if let (Control::Quantiser(control), Some(qp)) = (&mut self.control, qp) {
-                control.record(qp, frame.data.len(), now);
-            }
-            frame.qp = qp;
+            *avc444.token(view) = token;
         }
         Ok(output)
     }
 
     /// Converts the frame into a full-range BT.709 buffer from the session's pool, which
-    /// VideoToolbox reads without a further copy.
-    fn pixel_buffer(&self, bgra: &[u8], stride: usize) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
-        let row = self.width as usize * 4;
-        if stride < row || bgra.len() < stride * (self.height as usize - 1) + row {
+    /// VideoToolbox reads without a further copy. For AVC444 that is the picture's main view,
+    /// and its auxiliary view is kept beside it.
+    fn pixel_buffer(&mut self, bgra: &[u8], stride: usize) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
+        let (width, height) = (self.width as usize, self.height as usize);
+        if stride < width * 4 || bgra.len() < stride * (height - 1) + width * 4 {
             return Err(EncodeError("frame smaller than the encoder size".into()));
         }
-        let pool = unsafe { self.session.pixel_buffer_pool() }
+        let main = Locked::new(&self.session, width)?;
+        let converted = match self.avc444.as_deref_mut() {
+            Some(avc444) => {
+                let auxiliary = Locked::new(&self.session, width)?;
+                let converted = unsafe { avc444.convert(bgra, stride, (width, height), &main.planes, &auxiliary.planes) };
+                // A failed conversion keeps the last picture's views together.
+                if converted {
+                    avc444.auxiliary = Some(auxiliary.into_buffer());
+                }
+                converted
+            }
+            None => unsafe { self.converter.convert(bgra, stride, width, height, &main.planes) },
+        };
+        if !converted {
+            return Err(EncodeError("converting the frame to YUV failed".into()));
+        }
+        Ok(main.into_buffer())
+    }
+}
+
+/// A buffer from the session's pool, locked for writing until it is dropped.
+struct Locked {
+    buffer: CFRetained<CVPixelBuffer>,
+    planes: Nv12Planes,
+}
+
+impl Locked {
+    /// A buffer with planes wide enough for `width` samples.
+    fn new(session: &VTCompressionSession, width: usize) -> Result<Self, EncodeError> {
+        let pool = unsafe { session.pixel_buffer_pool() }
             .ok_or_else(|| EncodeError("the compression session has no pixel buffer pool".into()))?;
         let mut raw: *mut CVPixelBuffer = ptr::null_mut();
         let status = unsafe { CVPixelBufferPool::create_pixel_buffer(None, &pool, NonNull::from(&mut raw)) };
@@ -373,20 +558,27 @@ impl H264Encoder {
             cbcr: CVPixelBufferGetBaseAddressOfPlane(&buffer, 1) as *mut u8,
             cbcr_stride: CVPixelBufferGetBytesPerRowOfPlane(&buffer, 1),
         };
-        let usable = !planes.y.is_null()
-            && !planes.cbcr.is_null()
-            && planes.y_stride >= self.width as usize
-            && planes.cbcr_stride >= (self.width as usize).div_ceil(2) * 2;
-        let converted = usable
-            && unsafe {
-                self.converter
-                    .convert(bgra, stride, self.width as usize, self.height as usize, &planes)
-            };
-        unsafe { CVPixelBufferUnlockBaseAddress(&buffer, CVPixelBufferLockFlags::empty()) };
-        if !converted {
-            return Err(EncodeError("converting the frame to YUV failed".into()));
+        // From here on dropping it unlocks the buffer.
+        let locked = Self { buffer, planes };
+        let usable = !locked.planes.y.is_null()
+            && !locked.planes.cbcr.is_null()
+            && locked.planes.y_stride >= width
+            && locked.planes.cbcr_stride >= width.div_ceil(2) * 2;
+        if !usable {
+            return Err(EncodeError("the pixel buffer is smaller than the encoder size".into()));
         }
-        Ok(buffer)
+        Ok(locked)
+    }
+
+    /// The buffer, unlocked for VideoToolbox to read.
+    fn into_buffer(self) -> CFRetained<CVPixelBuffer> {
+        self.buffer.clone()
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        unsafe { CVPixelBufferUnlockBaseAddress(&self.buffer, CVPixelBufferLockFlags::empty()) };
     }
 }
 
@@ -452,14 +644,16 @@ fn open_session(
     Ok(unsafe { CFRetained::from_raw(raw) })
 }
 
-/// A low-latency session that takes a base quantiser with every frame, or `None` where the
-/// hardware offers no such session.
-fn quantiser_session(width: u32, height: u32, sink: &Mutex<Sink>) -> Option<CFRetained<VTCompressionSession>> {
+/// A low-latency session that takes a base quantiser with every frame, and with `ltr` makes
+/// long-term references, or `None` where the hardware offers no such session.
+fn quantiser_session(width: u32, height: u32, sink: &Mutex<Sink>, ltr: bool) -> Option<CFRetained<VTCompressionSession>> {
     let session = open_session(width, height, true, sink).ok()?;
-    let references = CFNumber::new_i32(LOW_LATENCY_REFERENCES);
+    let references = CFNumber::new_i32(if ltr { LTR_REFERENCES } else { LOW_LATENCY_REFERENCES });
+    let yes = CFBoolean::new(true);
     let usable = unsafe {
         supports_base_qp(&session)
             && set(&session, kVTCompressionPropertyKey_ReferenceBufferCount, references.as_ref()).is_ok()
+            && (!ltr || set(&session, kVTCompressionPropertyKey_EnableLTR, yes.as_ref()).is_ok())
     };
     if !usable {
         unsafe { session.invalidate() };
@@ -525,7 +719,10 @@ unsafe extern "C-unwind" fn on_encoded(
         return;
     };
     match annex_b(sample) {
-        Some(frame) => sink.output = Some(frame),
+        Some(frame) => {
+            sink.output = Some(frame);
+            sink.token = ltr_token(sample);
+        }
         None => sink.error = Some(-1),
     }
 }
@@ -552,6 +749,22 @@ fn is_key_frame(sample: &CMSampleBuffer) -> bool {
         let key = kCMSampleAttachmentKey_NotSync as *const CFString as *const c_void;
         let not_sync = CFDictionaryGetValue(dict, key);
         not_sync.is_null() || CFBooleanGetValue(not_sync) == 0
+    }
+}
+
+/// The token VideoToolbox wants acknowledged once the client has the frame, which makes the
+/// frame a long-term reference to refresh from.
+fn ltr_token(sample: &CMSampleBuffer) -> Option<i64> {
+    let attachments = unsafe { sample.sample_attachments_array(false) }?;
+    unsafe {
+        let array = &*attachments as *const _ as *const c_void;
+        if CFArrayGetCount(array) < 1 {
+            return None;
+        }
+        let dict = CFArrayGetValueAtIndex(array, 0);
+        let key = kVTSampleAttachmentKey_RequireLTRAcknowledgementToken as *const CFString as *const c_void;
+        let token = CFDictionaryGetValue(dict, key) as *const CFType;
+        token.as_ref()?.downcast_ref::<CFNumber>()?.as_i64()
     }
 }
 
@@ -610,7 +823,12 @@ fn annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
         }
     }
     avcc_to_annex_b(&avcc, length_size as usize, &mut data)?;
-    Some(EncodedFrame { data, key_frame, qp: None })
+    Some(EncodedFrame {
+        data,
+        auxiliary: None,
+        key_frame,
+        qp: None,
+    })
 }
 
 /// Rewrites NAL units carrying a big-endian length prefix of `length_size` bytes as Annex B.
@@ -688,5 +906,64 @@ mod tests {
         frame.iter_mut().step_by(5).for_each(|b| *b = 0);
         encoder.stage(&frame, stride).expect("stage");
         assert!(encoder.refine().expect("refine").is_some(), "a held frame goes out at once");
+    }
+
+    /// Lines of red, green and blue text on white, whose colour 4:2:0 smears.
+    fn coloured_text(width: usize, height: usize) -> Vec<u8> {
+        let mut bgra = vec![255u8; width * height * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let glyph = ((x / 7) * 31 + (y / 14) * 17) % 5 != 0 && (x % 7) < 5 && (y % 14) < 10 && ((x ^ y) & 3) != 0;
+                if glyph {
+                    let colour = [[0, 0, 220], [0, 150, 0], [200, 0, 0]][(y / 14) % 3];
+                    bgra[(y * width + x) * 4..][..3].copy_from_slice(&colour);
+                }
+            }
+        }
+        bgra
+    }
+
+    /// Both views of a frame, checking that each costs little when little changed, which holds
+    /// only if it predicts from the last view of its kind.
+    fn views_of_a_small_change(encoder: &mut H264Encoder, frame: &mut [u8], width: usize, x: usize) -> (usize, usize) {
+        frame[(100 * width + x) * 4..][..24].copy_from_slice(&[0, 0, 220, 255].repeat(6));
+        let typed = encoder.encode(frame, width * 4).expect("encode").expect("frame");
+        assert!(!typed.key_frame);
+        (typed.data.len(), typed.auxiliary.expect("an auxiliary view").len())
+    }
+
+    /// Needs the hardware encoder's low-latency mode, which Apple silicon has.
+    #[test]
+    fn avc444_frames_carry_both_views_each_predicted_from_its_kind() {
+        let (w, h) = (320usize, 240usize);
+        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30).expect("AVC444 encoder");
+        assert!(encoder.avc444());
+        let mut frame = coloured_text(w, h);
+        let first = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        assert!(first.key_frame);
+        let (main, auxiliary) = (first.data.len(), first.auxiliary.as_ref().expect("an auxiliary view").len());
+        let typed = views_of_a_small_change(&mut encoder, &mut frame, w, 50);
+        assert!(typed.0 * 10 < main && typed.1 * 10 < auxiliary, "{typed:?} after {main} and {auxiliary} bytes");
+        // A pause between keystrokes, many frame intervals long, keeps both chains.
+        std::thread::sleep(REFINE_AFTER + Duration::from_millis(50));
+        let typed = views_of_a_small_change(&mut encoder, &mut frame, w, 60);
+        assert!(typed.0 * 10 < main && typed.1 * 10 < auxiliary, "{typed:?} after a pause");
+
+        std::thread::sleep(REFINE_AFTER + Duration::from_millis(50));
+        let refined = encoder.refine().expect("refine").expect("a sharper frame once still");
+        assert!(refined.auxiliary.is_some(), "refinement sharpens both views");
+
+        // A key frame starts both chains afresh.
+        encoder.request_key_frame();
+        frame[..4].copy_from_slice(&[0, 0, 0, 255]);
+        let key = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        assert!(key.key_frame && key.auxiliary.is_some());
+        let typed = views_of_a_small_change(&mut encoder, &mut frame, w, 80);
+        assert!(typed.0 * 10 < main && typed.1 * 10 < auxiliary, "{typed:?} after a key frame");
+    }
+
+    #[test]
+    fn avc444_needs_whole_macroblock_widths() {
+        assert!(H264Encoder::new_avc444(1366, 768, 30).is_err());
     }
 }

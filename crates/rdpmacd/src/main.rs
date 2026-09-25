@@ -266,7 +266,7 @@ async fn main() -> anyhow::Result<()> {
         }
         None => display_handler,
     };
-    let gfx = (args.codec == Codec::Auto).then(rdpmac_session::gfx::GfxLink::new);
+    let gfx = (args.codec != Codec::Remotefx).then(|| rdpmac_session::gfx::GfxLink::new(args.codec == Codec::Auto));
     let display_handler = match &gfx {
         Some(link) => display_handler.with_gfx(link.clone()),
         None => display_handler,

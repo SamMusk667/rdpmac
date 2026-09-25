@@ -2,7 +2,7 @@
 //! Annex B stream, to inspect the bitstream with ffprobe and measure quality against the source.
 //!
 //!     cargo run --release -p rdpmac-encode --example h264_probe -- \
-//!         WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch]
+//!         WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444]
 //!
 //! Without an input file, or with `-`, the image is a synthetic pattern. Every scenario ends on
 //! the image itself, followed by a second and a half of the refinement a session asks for while
@@ -13,6 +13,9 @@
 //! - `scroll`: a second of scrolling at 30 frames per second, stopping on the image.
 //! - `switch`: a third of a second of the image alternating with an inverted copy, the worst case
 //!   for the rate control, then the image.
+//!
+//! With `avc444` every frame is two frames of the stream, the main view and then the auxiliary
+//! view, in the order one decoder decodes them.
 
 use std::io::Write;
 use std::thread::sleep;
@@ -44,7 +47,7 @@ fn synthetic(width: usize, height: usize) -> Vec<u8> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("usage: h264_probe WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch]");
+        eprintln!("usage: h264_probe WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444]");
         std::process::exit(2);
     }
     let width: u32 = args[1].parse().expect("width");
@@ -71,7 +74,12 @@ fn main() {
         other => panic!("unknown scenario {other}"),
     };
 
-    let mut encoder = rdpmac_encode::h264::H264Encoder::new(width, height, 30).expect("encoder");
+    let mut encoder = match args.get(6).map_or("avc420", String::as_str) {
+        "avc420" => rdpmac_encode::h264::H264Encoder::new(width, height, 30),
+        "avc444" => rdpmac_encode::h264::H264Encoder::new_avc444(width, height, 30),
+        other => panic!("unknown codec {other}"),
+    }
+    .expect("encoder");
     let mut out = std::fs::File::create(&args[3]).expect("output file");
     let started = Instant::now();
     eprintln!(
@@ -82,12 +90,16 @@ fn main() {
     let mut report = |what: &str, encoded: Option<rdpmac_encode::h264::EncodedFrame>| {
         if let Some(frame) = encoded {
             out.write_all(&frame.data).expect("write");
+            if let Some(auxiliary) = &frame.auxiliary {
+                out.write_all(auxiliary).expect("write");
+            }
             eprintln!(
-                "frame {index:>2} {what:<7} at {:>5} ms: {:>8} bytes{}{}",
+                "frame {index:>2} {what:<7} at {:>5} ms: {:>8} bytes{}{}{}",
                 started.elapsed().as_millis(),
                 frame.data.len(),
                 frame.qp.map(|qp| format!(" qp {qp}")).unwrap_or_default(),
-                if frame.key_frame { " (key)" } else { "" }
+                if frame.key_frame { " (key)" } else { "" },
+                frame.auxiliary.as_ref().map(|a| format!(" + auxiliary view {} bytes", a.len())).unwrap_or_default()
             );
             index += 1;
         } else if what == "changed" {

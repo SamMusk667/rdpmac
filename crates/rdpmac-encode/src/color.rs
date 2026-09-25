@@ -1,4 +1,5 @@
-//! BGRA to NV12 in full-range BT.709, the colour space MS-RDPEGFX 3.3.8.3.1 prescribes for AVC420.
+//! BGRA to NV12 in full-range BT.709, the colour space MS-RDPEGFX 3.3.8.3.1 prescribes for AVC420,
+//! and to full-range 4:4:4 for AVC444.
 //!
 //! Given BGRA, VideoToolbox converts to limited range, which a client decoding per the
 //! specification shows with grey blacks and whites and pale colours. Converting here with vImage
@@ -33,6 +34,10 @@ struct ConversionInfo {
 
 const ARGB8888: u32 = 0;
 const YP8_CBCR8_420: u32 = 4;
+const AYP_CB_CR8_444: u32 = 5;
+/// Rows converted to 4:4:4 at a time, few enough for a band to stay in cache while it is used.
+/// Even, so that bands hold whole pairs of rows.
+const BAND: usize = 64;
 const NO_FLAGS: u32 = 0;
 /// vImage reads ARGB; entry i names the source byte that becomes ARGB channel i of a BGRA pixel.
 const BGRA_AS_ARGB: [u8; 4] = [3, 2, 1, 0];
@@ -56,6 +61,47 @@ extern "C" {
         permute: *const u8,
         flags: u32,
     ) -> isize;
+    fn vImageConvert_ARGB8888To444AYpCbCr8(
+        src: *const VImageBuffer,
+        dest: *const VImageBuffer,
+        info: *const ConversionInfo,
+        permute: *const u8,
+        flags: u32,
+    ) -> isize;
+    fn vImageConvert_ARGB8888toPlanar8(
+        src: *const VImageBuffer,
+        dest_a: *const VImageBuffer,
+        dest_r: *const VImageBuffer,
+        dest_g: *const VImageBuffer,
+        dest_b: *const VImageBuffer,
+        flags: u32,
+    ) -> isize;
+}
+
+/// vImage's conversion from ARGB to full-range BT.709 in the given YpCbCr layout.
+fn conversion(ycbcr_type: u32) -> Option<Box<ConversionInfo>> {
+    let full = PixelRange {
+        yp_bias: 0,
+        cbcr_bias: 128,
+        yp_range_max: 255,
+        cbcr_range_max: 255,
+        yp_max: 255,
+        yp_min: 0,
+        cbcr_max: 255,
+        cbcr_min: 0,
+    };
+    let mut info = Box::new(ConversionInfo { opaque: [0; 128] });
+    let status = unsafe {
+        vImageConvert_ARGBToYpCbCr_GenerateConversion(
+            kvImage_ARGBToYpCbCrMatrix_ITU_R_709_2,
+            &full,
+            &mut *info,
+            ARGB8888,
+            ycbcr_type,
+            NO_FLAGS,
+        )
+    };
+    (status == 0).then_some(info)
 }
 
 /// One pixel in full-range BT.709, for the edge rows and columns vImage leaves out.
@@ -85,28 +131,9 @@ unsafe impl Send for Converter {}
 
 impl Converter {
     pub fn new() -> Option<Self> {
-        let full = PixelRange {
-            yp_bias: 0,
-            cbcr_bias: 128,
-            yp_range_max: 255,
-            cbcr_range_max: 255,
-            yp_max: 255,
-            yp_min: 0,
-            cbcr_max: 255,
-            cbcr_min: 0,
-        };
-        let mut info = Box::new(ConversionInfo { opaque: [0; 128] });
-        let status = unsafe {
-            vImageConvert_ARGBToYpCbCr_GenerateConversion(
-                kvImage_ARGBToYpCbCrMatrix_ITU_R_709_2,
-                &full,
-                &mut *info,
-                ARGB8888,
-                YP8_CBCR8_420,
-                NO_FLAGS,
-            )
-        };
-        (status == 0).then_some(Self { info })
+        Some(Self {
+            info: conversion(YP8_CBCR8_420)?,
+        })
     }
 
     /// Converts `width` x `height` BGRA pixels. The planes must hold that many luma samples and
@@ -184,6 +211,118 @@ impl Converter {
     }
 }
 
+/// The chroma planes of a full-range BT.709 4:4:4 picture, or of a band of its rows, each
+/// `width` samples a row.
+pub struct Chroma444 {
+    pub width: usize,
+    pub height: usize,
+    pub cb: Vec<u8>,
+    pub cr: Vec<u8>,
+}
+
+impl Chroma444 {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            cb: vec![128; width * height],
+            cr: vec![128; width * height],
+        }
+    }
+}
+
+/// BGRA to full-range BT.709 4:4:4: luma into a plane of the caller's, chroma a band of rows at a
+/// time into a [`Chroma444`] the caller reads while it is in cache.
+pub struct Converter444 {
+    info: Box<ConversionInfo>,
+    packed: Vec<u8>,
+    alpha: Vec<u8>,
+    band: Chroma444,
+}
+
+// As for `Converter`; the scratch buffers belong to whoever holds the converter.
+unsafe impl Send for Converter444 {}
+
+impl Converter444 {
+    pub fn new() -> Option<Self> {
+        Some(Self {
+            info: conversion(AYP_CB_CR8_444)?,
+            packed: Vec::new(),
+            alpha: Vec::new(),
+            band: Chroma444::new(0, 0),
+        })
+    }
+
+    /// Converts `width` x `height` BGRA pixels, writing luma rows `y_stride` apart from `y` and
+    /// handing each band's chroma to `band` along with the band's first row.
+    ///
+    /// # Safety
+    /// `y` and `y_stride` must describe a writable plane of that many rows and samples.
+    pub unsafe fn convert(
+        &mut self,
+        bgra: &[u8],
+        stride: usize,
+        (width, height): (usize, usize),
+        (y, y_stride): (*mut u8, usize),
+        mut band: impl FnMut(usize, &Chroma444),
+    ) -> bool {
+        if width == 0 || height == 0 || stride < width * 4 || bgra.len() < stride * (height - 1) + width * 4 {
+            return false;
+        }
+        if y_stride < width {
+            return false;
+        }
+        self.packed.resize(width * 4 * BAND, 0);
+        self.alpha.resize(width * BAND, 0);
+        if self.band.width != width {
+            self.band = Chroma444::new(width, BAND);
+        }
+        let mut top = 0;
+        while top < height {
+            let rows = BAND.min(height - top);
+            let src = VImageBuffer {
+                data: bgra.as_ptr().add(top * stride) as *mut c_void,
+                height: rows,
+                width,
+                row_bytes: stride,
+            };
+            let packed = VImageBuffer {
+                data: self.packed.as_mut_ptr().cast(),
+                height: rows,
+                width,
+                row_bytes: width * 4,
+            };
+            let status =
+                vImageConvert_ARGB8888To444AYpCbCr8(&src, &packed, &*self.info, BGRA_AS_ARGB.as_ptr(), NO_FLAGS);
+            if status != 0 {
+                return false;
+            }
+            let plane = |data: *mut u8, row_bytes: usize| VImageBuffer {
+                data: data.cast(),
+                height: rows,
+                width,
+                row_bytes,
+            };
+            // The packed pixels are A, Y', Cb, Cr: split them as if they were A, R, G, B.
+            let status = vImageConvert_ARGB8888toPlanar8(
+                &packed,
+                &plane(self.alpha.as_mut_ptr(), width),
+                &plane(y.add(top * y_stride), y_stride),
+                &plane(self.band.cb.as_mut_ptr(), width),
+                &plane(self.band.cr.as_mut_ptr(), width),
+                NO_FLAGS,
+            );
+            if status != 0 {
+                return false;
+            }
+            self.band.height = rows;
+            band(top, &self.band);
+            top += rows;
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +371,37 @@ mod tests {
         let (y, cbcr) = run(5, 3, &solid(5, 3, [255, 255, 255]));
         assert!(y.iter().all(|&v| v == 255), "every luma sample written: {y:?}");
         assert!(cbcr.iter().all(|&v| v.abs_diff(128) <= 1), "every chroma pair written: {cbcr:?}");
+    }
+
+    #[test]
+    fn converts_to_444_across_bands() {
+        // Taller than one band, with a stride wider than the rows.
+        let (width, height, stride) = (18usize, BAND + 9, 18 * 4 + 12);
+        let bgra: Vec<u8> = (0..stride * height).map(|i| ((i * 37 + i / stride * 11) % 256) as u8).collect();
+        let mut converter = Converter444::new().expect("vImage conversion");
+        let mut chroma = Chroma444::new(width, height);
+        let y_stride = width + 3;
+        let mut y = vec![0u8; y_stride * height];
+        let mut bands = Vec::new();
+        let converted = unsafe {
+            converter.convert(&bgra, stride, (width, height), (y.as_mut_ptr(), y_stride), |top, band| {
+                bands.push((top, band.height));
+                let rows = top * width..(top + band.height) * width;
+                chroma.cb[rows.clone()].copy_from_slice(&band.cb[..band.height * width]);
+                chroma.cr[rows].copy_from_slice(&band.cr[..band.height * width]);
+            })
+        };
+        assert!(converted);
+        assert_eq!(bands, [(0, BAND), (BAND, 9)]);
+        for row in 0..height {
+            for x in 0..width {
+                let p = &bgra[row * stride + x * 4..][..3];
+                let (luma, cb, cr) = ycbcr(p[0], p[1], p[2]);
+                let at = row * width + x;
+                assert!(y[row * y_stride + x].abs_diff(luma) <= 1, "Y at {x},{row}");
+                assert!(chroma.cb[at].abs_diff(cb) <= 1, "Cb at {x},{row}");
+                assert!(chroma.cr[at].abs_diff(cr) <= 1, "Cr at {x},{row}");
+            }
+        }
     }
 }

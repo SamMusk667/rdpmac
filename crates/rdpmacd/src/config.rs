@@ -48,8 +48,12 @@ pub enum VirtualDisplay {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Codec {
-    /// H.264 through the graphics pipeline when the client supports it, RemoteFX otherwise.
+    /// H.264 through the graphics pipeline when the client supports it, in full colour (AVC444)
+    /// where it can; RemoteFX otherwise.
     Auto,
+    /// H.264 in 4:2:0 colour (AVC420) only, which costs less to encode and send; RemoteFX when
+    /// the client has no H.264.
+    Avc420,
     /// RemoteFX and bitmap updates only.
     Remotefx,
 }

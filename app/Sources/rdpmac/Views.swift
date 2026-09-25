@@ -147,7 +147,7 @@ struct SettingsView: View {
     @State private var listen = ""
     @State private var followClient = true
     @State private var ownDisplay = true
-    @State private var h264 = true
+    @State private var codec = "auto"
     @State private var clipboard = true
     @State private var fps = 30
     @State private var nla = false
@@ -165,7 +165,11 @@ struct SettingsView: View {
             }
             Toggle("Give sessions a display of their own when no screen is attached", isOn: $ownDisplay)
                 .disabled(!followClient || model.status?.virtualDisplaysSupported == false)
-            Toggle("Use H.264 when the client supports it", isOn: $h264)
+            Picker("Codec", selection: $codec) {
+                Text("H.264 in full colour (AVC444)").tag("auto")
+                Text("H.264 (AVC420)").tag("avc420")
+                Text("RemoteFX").tag("remotefx")
+            }
             Toggle("Share the clipboard", isOn: $clipboard)
             Stepper("Frame rate: \(fps) per second", value: $fps, in: 5...60, step: 5)
             Toggle("Require Network Level Authentication (NLA)", isOn: $nla)
@@ -197,7 +201,7 @@ struct SettingsView: View {
             listen = file.listen ?? ""
             followClient = (file.resolution ?? effective?.resolution ?? "follow-client") == "follow-client"
             ownDisplay = (file.virtualDisplay ?? effective?.virtualDisplay ?? "auto") == "auto"
-            h264 = (file.codec ?? effective?.codec ?? "auto") == "auto"
+            codec = file.codec ?? effective?.codec ?? "auto"
             clipboard = file.clipboard ?? effective?.clipboard ?? true
             fps = file.fps ?? effective?.fps ?? 30
             nla = (file.security ?? effective?.security ?? "tls") == "nla"
@@ -212,7 +216,7 @@ struct SettingsView: View {
         settings.listen = address.isEmpty ? nil : address
         settings.resolution = followClient ? "follow-client" : "native"
         settings.virtualDisplay = ownDisplay ? "auto" : "off"
-        settings.codec = h264 ? "auto" : "remotefx"
+        settings.codec = codec
         settings.clipboard = clipboard
         settings.fps = fps
         settings.security = nla ? "nla" : "tls"

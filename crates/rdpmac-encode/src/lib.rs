@@ -5,6 +5,8 @@
 //! VideoToolbox H.264 path that feeds the graphics pipeline instead of this module.
 
 #[cfg(target_os = "macos")]
+pub mod avc444;
+#[cfg(target_os = "macos")]
 pub mod color;
 #[cfg(target_os = "macos")]
 pub mod h264;

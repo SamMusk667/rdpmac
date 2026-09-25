@@ -1,4 +1,5 @@
-//! The graphics pipeline (MS-RDPEGFX) path: H.264 frames for clients that negotiate AVC420.
+//! The graphics pipeline (MS-RDPEGFX) path: H.264 frames for clients that negotiate AVC420, in
+//! full colour as AVC444v2 where the client and the session size allow it.
 //!
 //! IronRDP asks [`GfxFactory`] for a graphics pipeline server on every connection; the factory
 //! keeps a handle to it in a [`GfxLink`] shared with the frame thread. The frame thread's
@@ -13,7 +14,8 @@ use ironrdp_egfx::pdu::{Avc420Region, CapabilitiesAdvertisePdu, CapabilitySet};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_server::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle, ServerEvent, ServerEventSender};
 use ironrdp_svc::ChannelFlags;
-use rdpmac_encode::h264::{EncodedFrame, H264Encoder};
+use rdpmac_encode::avc444;
+use rdpmac_encode::h264::{EncodeError, EncodedFrame, H264Encoder};
 use rdpmac_encode::rate::RateControl;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
@@ -36,11 +38,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct GfxLink {
     handle: Mutex<Option<GfxServerHandle>>,
     sender: Mutex<Option<UnboundedSender<ServerEvent>>>,
+    /// Whether AVC444 may be used; AVC420 only otherwise.
+    avc444: bool,
 }
 
 impl GfxLink {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn new(avc444: bool) -> Arc<Self> {
+        Arc::new(Self {
+            avc444,
+            ..Self::default()
+        })
     }
 }
 
@@ -115,6 +122,8 @@ pub struct GfxStream {
     rate: Option<RateControl>,
     surface: Option<SurfaceState>,
     disabled: bool,
+    /// Set once an AVC444 encoder could not be made, which leaves AVC420.
+    avc444_unavailable: bool,
     announced: bool,
     too_large_reported: bool,
     started: Instant,
@@ -132,6 +141,7 @@ impl GfxStream {
             rate: None,
             surface: None,
             disabled: false,
+            avc444_unavailable: false,
             announced: false,
             too_large_reported: false,
             started: Instant::now(),
@@ -158,7 +168,7 @@ impl GfxStream {
             }
             return GfxOutcome::Unavailable;
         }
-        {
+        let avc444 = {
             let server = lock(&handle);
             if !server.is_ready() || !server.supports_avc420() {
                 return GfxOutcome::Unavailable;
@@ -169,13 +179,15 @@ impl GfxStream {
                 self.stage(bgra, width, height, stride);
                 return GfxOutcome::Skipped;
             }
-        }
+            self.link.avc444 && !self.avc444_unavailable && server.supports_avc444() && avc444::fits(width, height)
+        };
 
-        if self.encoder.as_ref().map(H264Encoder::size) != Some((width, height)) {
-            match H264Encoder::new(width, height, self.fps) {
+        if self.encoder.as_ref().map(|e| (e.size(), e.avc444())) != Some(((width, height), avc444)) {
+            match self.open_encoder(width, height, avc444) {
                 Ok(encoder) => {
                     let quantiser = encoder.controls_quantiser();
-                    info!(width, height, quantiser, "H.264 encoder ready");
+                    let avc444 = encoder.avc444();
+                    info!(width, height, quantiser, avc444, "H.264 encoder ready");
                     self.rate = Some(RateControl::new(encoder.target_bitrate(), Instant::now()));
                     self.encoder = Some(encoder);
                 }
@@ -275,6 +287,20 @@ impl GfxStream {
         }
     }
 
+    /// An AVC444 encoder when asked for and possible, an AVC420 one otherwise.
+    fn open_encoder(&mut self, width: u32, height: u32, avc444: bool) -> Result<H264Encoder, EncodeError> {
+        if avc444 {
+            match H264Encoder::new_avc444(width, height, self.fps) {
+                Ok(encoder) => return Ok(encoder),
+                Err(e) => {
+                    warn!(%e, "AVC444 unavailable, sending H.264 in 4:2:0");
+                    self.avc444_unavailable = true;
+                }
+            }
+        }
+        H264Encoder::new(width, height, self.fps)
+    }
+
     /// Keeps a frame the client is too far behind to take, for `refine` to send later.
     fn stage(&mut self, bgra: &[u8], width: u32, height: u32, stride: usize) {
         let Some(encoder) = self.encoder.as_mut().filter(|e| e.size() == (width, height)) else {
@@ -292,8 +318,10 @@ impl GfxStream {
             return GfxOutcome::Unavailable;
         };
         let (id, width, height) = (surface.id, surface.width, surface.height);
+        let avc444 = self.encoder.as_ref().is_some_and(H264Encoder::avc444);
         if !self.announced {
-            info!(width, height, "sending H.264 through the graphics pipeline");
+            let codec = if avc444 { "AVC444v2" } else { "AVC420" };
+            info!(width, height, codec, "sending H.264 through the graphics pipeline");
             self.announced = true;
         }
         let region = Avc420Region {
@@ -304,9 +332,16 @@ impl GfxStream {
             quantization_parameter: REGION_QP,
             quality: REGION_QUALITY,
         };
+        let regions = [region];
         let timestamp = self.started.elapsed().as_millis() as u32;
         let mut server = lock(handle);
-        if server.send_avc420_frame(id, &encoded.data, &[region], timestamp).is_none() {
+        let queued = if avc444 {
+            let auxiliary = encoded.auxiliary.as_deref().map(|view| (view, &regions[..]));
+            server.send_avc444v2_frame(id, Some((&encoded.data, &regions)), auxiliary, timestamp)
+        } else {
+            server.send_avc420_frame(id, &encoded.data, &regions, timestamp)
+        };
+        if queued.is_none() {
             // The client never sees this frame, so the next one must not depend on it.
             if let Some(encoder) = self.encoder.as_mut() {
                 encoder.request_key_frame();
@@ -316,7 +351,7 @@ impl GfxStream {
         self.flush(&mut server);
         drop(server);
         self.adapt(false);
-        GfxOutcome::Sent(encoded.data.len())
+        GfxOutcome::Sent(encoded.bytes())
     }
 
     /// Feeds the rate controller and applies a bitrate change it asks for.

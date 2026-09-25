@@ -68,7 +68,9 @@ target/release/rdpmacd --request-permissions
 ```
 
 画面默认在客户端支持时走 H.264（`--codec auto`，VideoToolbox 硬件编码，经图形管线发送，不超过 4096x2304），
-否则走 RemoteFX；`--codec remotefx` 固定用 RemoteFX。H.264 按规范用全范围 BT.709；画面停下约 0.2 秒后，服务端
+否则走 RemoteFX。客户端支持时 H.264 用 AVC444，带完整色度，彩色文字没有色边；宽度不是 16 的倍数的尺寸用 AVC420。
+`--codec avc420` 只用 AVC420，编码开销约减半；`--codec remotefx` 固定用 RemoteFX（见 `docs/avc444.md`）。
+H.264 按规范用全范围 BT.709；画面停下约 0.2 秒后，服务端
 用更细的量化参数把当前画面再编一次，文字接近无损，变化中的画面则按码率取量化参数。纯文本剪贴板默认双向共享，
 `--no-clipboard` 关闭。
 

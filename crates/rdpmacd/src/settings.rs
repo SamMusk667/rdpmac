@@ -203,6 +203,8 @@ mod tests {
     fn unknown_keys_and_bad_values_are_rejected() {
         assert!(toml::from_str::<Settings>("lisen = \"0.0.0.0:3389\"").is_err());
         assert!(toml::from_str::<Settings>("codec = \"h265\"").is_err());
+        let settings: Settings = toml::from_str("codec = \"avc420\"").expect("parses");
+        assert_eq!(settings.codec, Some(Codec::Avc420));
         let settings: Settings = toml::from_str("fps = 500").expect("parses");
         assert!(settings.validate().is_err());
         let settings: Settings = toml::from_str("cert = \"/tmp/c.pem\"").expect("parses");
