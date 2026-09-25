@@ -214,6 +214,11 @@ final class Model: ObservableObject {
         status?.settings.security == "nla" && status?.nla?.enrolled == false
     }
 
+    /// The enrollment is from before the server was updated, and the update cannot read it.
+    var nlaStale: Bool {
+        status?.nla?.stale == true
+    }
+
     // MARK: - Logs and diagnostics
 
     func openLogs() {

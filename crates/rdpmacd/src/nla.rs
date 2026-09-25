@@ -17,18 +17,28 @@ fn user() -> anyhow::Result<String> {
     Ok(name)
 }
 
-/// The user and when they enrolled, or null where enrollment does not apply.
+/// The user and when they enrolled, or null where enrollment does not apply. `stale` means the
+/// hash an earlier build of rdpmacd stored cannot be read by this one, so the user has to enroll
+/// again; `enrolled` is then false.
 pub fn status(settings: &Settings) -> Value {
     #[cfg(target_os = "macos")]
     if settings.auth == Some(crate::config::AuthMode::Pam) {
-        use rdpmac_auth::keychain::KeychainStore;
+        use rdpmac_auth::keychain::{KeychainStore, Stored};
         let Ok(user) = user() else {
             return Value::Null;
         };
-        return match KeychainStore::default().enrolled() {
-            Ok(enrolled) => {
-                let mine = enrolled.iter().find(|e| e.user == user);
-                json!({ "user": user, "enrolled": mine.is_some(), "since": mine.and_then(|e| e.modified) })
+        let store = KeychainStore::default();
+        let state = store.stored(&user).and_then(|stored| Ok((stored, store.enrolled()?)));
+        return match state {
+            Ok((stored, enrolled)) => {
+                let since = enrolled.iter().find(|e| e.user == user).and_then(|e| e.modified);
+                let usable = matches!(stored, Stored::Hash(_));
+                json!({
+                    "user": user,
+                    "enrolled": usable,
+                    "stale": stored == Stored::Unreadable,
+                    "since": since.filter(|_| usable),
+                })
             }
             Err(e) => json!({ "user": user, "error": e.to_string() }),
         };
@@ -65,7 +75,11 @@ pub async fn enroll(settings: &Settings, password: &str) -> anyhow::Result<()> {
         }
         Err(e) => anyhow::bail!("checking the password failed: {e}"),
     }
-    KeychainStore::default().enroll(&user, &nt_hash(password))?;
+    let store = KeychainStore::default();
+    if matches!(store.stored(&user), Ok(rdpmac_auth::keychain::Stored::Unreadable)) {
+        info!(user, "replacing the NLA enrollment an earlier build of rdpmacd stored");
+    }
+    store.enroll(&user, &nt_hash(password))?;
     info!(user, "enrolled for NLA");
     Ok(())
 }

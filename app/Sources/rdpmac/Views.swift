@@ -28,7 +28,9 @@ struct MenuContent: View {
                 Text("Restart the server after allowing")
             }
             if model.nlaUnusable {
-                Button("Enroll for Network Level Authentication…") { windows.showSettings(model) }
+                Button(model.nlaStale
+                       ? "Enroll Again for Network Level Authentication…"
+                       : "Enroll for Network Level Authentication…") { windows.showSettings(model) }
             }
             Divider()
             Button("Settings…") { windows.showSettings(model) }
@@ -249,6 +251,11 @@ extension SettingsView {
             Text("Enroll again after changing the Mac password.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        } else if account.stale == true {
+            Text("After the update the server cannot read \(account.user)'s enrollment, so NLA sign-ins fail. Enroll again with the Mac password.")
+                .font(.callout)
+                .foregroundStyle(nla ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(nla
                  ? "Enroll \(account.user) with the Mac password, or nobody can sign in."
@@ -260,7 +267,7 @@ extension SettingsView {
         HStack {
             SecureField("Mac password", text: $password)
                 .onSubmit(enroll)
-            Button(account.enrolled == true ? "Enroll Again" : "Enroll", action: enroll)
+            Button(account.enrolled == true || account.stale == true ? "Enroll Again" : "Enroll", action: enroll)
                 .disabled(password.isEmpty || enrolling)
         }
         if let enrollment {

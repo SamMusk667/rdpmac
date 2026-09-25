@@ -127,15 +127,29 @@ fn nla(args: &Args) -> anyhow::Result<(Arc<dyn CredentialValidator>, Lookup)> {
         AuthMode::Pam => {
             #[cfg(target_os = "macos")]
             {
-                use rdpmac_auth::keychain::KeychainStore;
+                use rdpmac_auth::keychain::{KeychainStore, Stored};
                 let store = KeychainStore::default();
                 match store.enrolled() {
-                    Ok(enrolled) if enrolled.is_empty() => warn!(
-                        "NLA is on but no account is enrolled for it, so nobody can log on; enroll in the \
-                         rdpmac app"
-                    ),
                     Ok(enrolled) => {
-                        info!(accounts = ?enrolled.iter().map(|e| &e.user).collect::<Vec<_>>(), "enrolled for NLA")
+                        let mut accounts = Vec::new();
+                        for account in enrolled {
+                            match store.stored(&account.user) {
+                                Ok(Stored::Hash(_)) => accounts.push(account.user),
+                                Ok(Stored::Nothing) => {}
+                                Ok(Stored::Unreadable) => warn!(
+                                    user = account.user,
+                                    "an earlier build of rdpmacd stored this account's NLA credentials, which \
+                                     this one may not read; its NLA logons fail until it is enrolled again in \
+                                     the rdpmac app"
+                                ),
+                                Err(e) => warn!(user = account.user, %e, "reading the account's NLA credentials failed"),
+                            }
+                        }
+                        if accounts.is_empty() {
+                            warn!("NLA is on but no account can log on with it; enroll in the rdpmac app");
+                        } else {
+                            info!(?accounts, "enrolled for NLA");
+                        }
                     }
                     Err(e) => warn!(%e, "listing the accounts enrolled for NLA failed"),
                 }

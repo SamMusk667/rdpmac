@@ -47,6 +47,9 @@ struct DaemonStatus: Decodable {
         let enrolled: Bool?
         /// When the user enrolled, in seconds since 1970.
         let since: TimeInterval?
+        /// Set when an earlier build of the server stored the enrollment, which this one may not
+        /// read; `enrolled` is then false until the user enrolls again.
+        let stale: Bool?
         /// Set when the keychain could not be read.
         let error: String?
     }

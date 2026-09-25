@@ -185,7 +185,11 @@ rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进�
 
 - 2026-09-24 NLA 凭据库模式完成，设计、实现与测试见 `docs/nla.md`。IronRDP 补丁在 `~/works/IronRDP` 的 `rdpmac/nla`
   分支上，还没提交上游；NT 哈希存在登录钥匙串，在 App 里登记；设置 `security = "nla"` 开启。本机回环（FreeRDP
-  sfreerdp）已测过正确口令、错误口令、未登记账号、只支持 TLS 的客户端和失败锁定，待 mstsc 实测。Kerberos 要等有 AD 域再做。
+  sfreerdp）已测过正确口令、错误口令、未登记账号、只支持 TLS 的客户端和失败锁定；2026-09-25 你用 mstsc 实测通过。
+  Kerberos 要等有 AD 域再做。
+- 2026-09-25 升级后 NLA 失效：没有团队 ID 的签名下，每个构建都算另一个程序，读不到上一个构建写入的哈希。现在状态、
+  启动日志和 App 都会提示重新登记，重新登记直接覆盖旧条目，删除登记在删不掉时改写成标记。长期办法是 Developer ID
+  签名。见 `docs/nla.md`。
 - 2026-09-25 AVC444 完成，设计、测量与测试见 `docs/avc444.md`。用 AVC444v2，每帧两路视图一起发；VideoToolbox 只从上一帧
   预测，靠长期参考帧让两路各自从上一路同类视图预测，打字时每路只有几 KB。彩色文字的 RGB PSNR 从 28.4 dB 升到 37.0 dB。
   IronRDP 补丁加了 `send_avc444v2_frame`，并修正只含色度的帧的长度字段。设置 `codec = "avc420"` 可以关掉；
