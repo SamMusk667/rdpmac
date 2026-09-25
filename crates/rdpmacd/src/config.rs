@@ -117,6 +117,20 @@ pub struct Args {
     /// Trigger the macOS permission prompts for screen recording and accessibility, then exit.
     #[arg(long)]
     pub request_permissions: bool,
+
+    /// Switch display ID to its WIDTHxHEIGHT mode, then exit. rdpmacd runs itself with this for
+    /// its virtual display, because the switch has to come from another process.
+    #[arg(long, hide = true, value_name = "ID:WIDTHxHEIGHT", value_parser = parse_switch)]
+    pub switch_display_mode: Option<(u32, u32, u32)>,
+}
+
+fn parse_switch(text: &str) -> Result<(u32, u32, u32), String> {
+    let (id, size) = text
+        .split_once(':')
+        .ok_or_else(|| format!("expected ID:WIDTHxHEIGHT, got {text}"))?;
+    let id = id.trim().parse::<u32>().map_err(|e| format!("{id}: {e}"))?;
+    let (width, height) = parse_size(size)?;
+    Ok((id, width, height))
 }
 
 fn parse_size(text: &str) -> Result<(u32, u32), String> {
@@ -129,4 +143,16 @@ fn parse_size(text: &str) -> Result<(u32, u32), String> {
         return Err("size must be between 16x16 and 8192x8192".into());
     }
     Ok((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_argument_names_a_display_and_a_size() {
+        assert_eq!(parse_switch("7:3840x2160"), Ok((7, 3840, 2160)));
+        assert!(parse_switch("3840x2160").is_err());
+        assert!(parse_switch("x:3840x2160").is_err());
+    }
 }

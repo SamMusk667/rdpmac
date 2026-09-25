@@ -2,6 +2,7 @@
 
 mod config;
 mod control;
+mod display_mode;
 mod settings;
 mod status;
 mod tls;
@@ -139,6 +140,11 @@ async fn main() -> anyhow::Result<()> {
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
+    if let Some((display, width, height)) = args.switch_display_mode {
+        return screenio_core::switch_display_mode(display, width, height)
+            .with_context(|| format!("switching display {display} to {width}x{height}"));
+    }
+
     if args.request_permissions {
         let info = screenio_core::request_permissions();
         info!(?info, "permission prompts shown; grant them in System Settings and restart");
@@ -204,7 +210,9 @@ async fn main() -> anyhow::Result<()> {
         && mode == ResolutionMode::FollowClient
         && args.test_pattern.is_none()
         && args.display.is_none();
-    let virtual_screen = own_display.then(rdpmac_session::virtual_screen::VirtualScreen::new).flatten();
+    let virtual_screen = own_display
+        .then(|| rdpmac_session::virtual_screen::VirtualScreen::new(display_mode::switch_in_helper))
+        .flatten();
     let display_handler = match &virtual_screen {
         Some(screen) => {
             info!("sessions get a display of their own when no screen is attached");

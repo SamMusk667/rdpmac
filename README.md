@@ -62,8 +62,9 @@ target/release/rdpmacd --request-permissions
 - 没接显示器的 Mac 上，会话得到一块自己的虚拟显示器，尺寸就是客户端请求的像素尺寸，替代系统的 1920x1080
   占位显示器成为桌面，原生分辨率、不缩放。最后一个会话结束 30 秒后虚拟显示器移除，占位显示器回来。
   `--virtual-display off` 关闭这一行为。
-- 接了显示器，或 macOS 不接受请求的尺寸（macOS 26 把 3840x2160 定成 1920x1080），画面由 ScreenCaptureKit
-  缩放到请求的尺寸，宽高比不同时加黑边。
+- 3840x2160 第一次会被 macOS 定成 1920x1080。rdpmacd 这时以辅助进程把显示器切到 4K，效果与在系统设置里手动切换
+  相同；macOS 按显示器身份记住后，以后的 4K 会话直接就是 4K。
+- 接了显示器，或 macOS 不接受请求的尺寸，画面由 ScreenCaptureKit 缩放到请求的尺寸，宽高比不同时加黑边。
 - `--resolution native` 恢复为显示器自身的像素尺寸。
 
 首次运行会在 `~/Library/Application Support/rdpmac/` 生成 TLS 自签名证书。采集需要"屏幕录制"权限，注入需要

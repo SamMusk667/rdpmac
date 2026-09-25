@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use screenio_core::{list_displays, DisplayInfo, VirtualDisplay};
+use screenio_core::{list_displays, DisplayInfo, ModeSwitch, VirtualDisplay};
 use tracing::{debug, info, warn};
 
 const NAME: &str = "rdpmac";
@@ -30,6 +30,7 @@ struct State {
 
 pub struct VirtualScreen {
     state: Mutex<State>,
+    switch: ModeSwitch,
 }
 
 fn lock(m: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -37,8 +38,10 @@ fn lock(m: &Mutex<State>) -> MutexGuard<'_, State> {
 }
 
 impl VirtualScreen {
-    /// `None` when this Mac cannot create virtual displays.
-    pub fn new() -> Option<Arc<Self>> {
+    /// `None` when this Mac cannot create virtual displays. `switch` runs
+    /// `screenio_core::switch_display_mode` in another process, which macOS needs once before it
+    /// gives the display 3840x2160.
+    pub fn new(switch: ModeSwitch) -> Option<Arc<Self>> {
         if !VirtualDisplay::is_supported() {
             return None;
         }
@@ -48,6 +51,7 @@ impl VirtualScreen {
                 streams: 0,
                 last_used: Instant::now(),
             }),
+            switch,
         });
         let weak = Arc::downgrade(&screen);
         if let Err(e) = thread::Builder::new()
@@ -88,7 +92,7 @@ impl VirtualScreen {
                 }
                 info!(display = existing.id(), width, height, "virtual display resized");
             }
-            None => match VirtualDisplay::create(NAME, width, height) {
+            None => match VirtualDisplay::create_with_switch(NAME, width, height, self.switch) {
                 Ok(created) => {
                     info!(display = created.id(), width, height, "virtual display created");
                     state.display = Some(created);
@@ -172,7 +176,7 @@ mod tests {
     #[test]
     #[ignore = "creates a real display"]
     fn prepares_resizes_and_scales_on_a_real_mac() {
-        let screen = VirtualScreen::new().expect("virtual displays are supported");
+        let screen = VirtualScreen::new(|_, _, _| false).expect("virtual displays are supported");
         let id = screen.prepare(1600, 900).expect("created at the client's size");
         let shown = |id: u32| {
             let displays = list_displays().expect("listing displays");
@@ -181,9 +185,12 @@ mod tests {
         assert_eq!(shown(id), Some((1600, 900, true)));
         assert_eq!(screen.prepare(2400, 1300), Some(id), "resized in place");
         assert_eq!(shown(id), Some((2400, 1300, true)));
-        // macOS keeps 1920x1080 for a 4K request; the session then scales that display.
-        assert_eq!(screen.prepare(3840, 2160), None);
-        assert_eq!(shown(id), Some((1920, 1080, true)));
+        // Until macOS has learned 3840x2160 for this display it keeps 1920x1080, and without a
+        // switch helper the session then scales that display.
+        match screen.prepare(3840, 2160) {
+            Some(same) => assert_eq!((same, shown(id)), (id, Some((3840, 2160, true)))),
+            None => assert_eq!(shown(id), Some((1920, 1080, true))),
+        }
         drop(screen);
     }
 
