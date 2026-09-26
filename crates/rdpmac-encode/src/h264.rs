@@ -41,7 +41,7 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_ReferenceBufferCount,
     kVTCompressionPropertyKey_SupportsBaseFrameQP, kVTEncodeFrameOptionKey_AcknowledgedLTRTokens,
     kVTEncodeFrameOptionKey_BaseFrameQP, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTEncodeFrameOptionKey_ForceLTRRefresh, kVTProfileLevel_H264_Main_AutoLevel,
+    kVTEncodeFrameOptionKey_ForceLTRRefresh, kVTProfileLevel_H264_Main_5_0, kVTProfileLevel_H264_Main_AutoLevel,
     kVTSampleAttachmentKey_RequireLTRAcknowledgementToken,
     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
     kVTVideoEncoderSpecification_EnableLowLatencyRateControl, VTCompressionSession, VTEncodeInfoFlags,
@@ -53,6 +53,8 @@ use crate::color::{Converter, Converter444, Nv12Planes};
 use crate::quantiser::QpControl;
 
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
+/// NAL unit header of an access unit delimiter.
+const ACCESS_UNIT_DELIMITER: u8 = 0x09;
 /// Target bits per pixel per frame while the picture moves.
 const BITS_PER_PIXEL: f64 = 0.2;
 const MIN_BITRATE: f64 = 2_000_000.0;
@@ -64,10 +66,15 @@ const REFINE_AFTER: Duration = Duration::from_millis(200);
 /// Reference frames the low-latency session may keep. Left alone it declares twelve, the
 /// picture buffer mstsc disconnected on at 1920x1200; limited to one it sends only key frames.
 const LOW_LATENCY_REFERENCES: i32 = 2;
-/// Reference frames of an AVC444 session. Two chains of long-term references need four: with
-/// three VideoToolbox makes only every other frame one, with two none. The levels it declares
-/// allow four at every size measured, from 1280x720 to 4096x2304.
-const LTR_REFERENCES: i32 = 4;
+/// Reference frames of an AVC444 session. Two chains of long-term references needed four on
+/// macOS 26; macOS 27 keeps one fewer, so four leave every third frame without a token and the
+/// view after it without a reference, and five are needed. VideoToolbox never declares more
+/// than the level allows, see [`LEVEL_5_0_MACROBLOCKS`].
+const LTR_REFERENCES: i32 = 5;
+/// Pictures up to this many macroblocks fit level 5.0, whose picture buffer holds five of them
+/// even at 4096x2160. AVC444 sessions of such sizes ask for it: left to choose, VideoToolbox takes
+/// level 4.0 for 1920x1080 and 1680x1050, holds four, and cuts the references to four.
+const LEVEL_5_0_MACROBLOCKS: u32 = 22_080;
 /// Without quantiser control, refinement re-encodes the picture this many times, each with the
 /// bitrate raised by `REFINE_BOOST`; a larger boost measured the same.
 const BOOSTED_REFINEMENTS: u32 = 3;
@@ -138,10 +145,12 @@ struct Avc444 {
     /// the frame before.
     frames: i64,
     fps: i32,
+    /// Threads the colour conversion may use.
+    threads: usize,
 }
 
 impl Avc444 {
-    fn new(fps: i32) -> Result<Self, EncodeError> {
+    fn new(fps: i32, threads: usize) -> Result<Self, EncodeError> {
         let converter = Converter444::new().ok_or_else(|| EncodeError("vImage has no BT.709 4:4:4 conversion".into()))?;
         Ok(Self {
             converter,
@@ -150,6 +159,7 @@ impl Avc444 {
             auxiliary_token: None,
             frames: 0,
             fps,
+            threads,
         })
     }
 
@@ -165,7 +175,7 @@ impl Avc444 {
     /// # Safety
     /// `main` and `auxiliary` must describe writable NV12 pictures of `size`.
     unsafe fn convert(&mut self, bgra: &[u8], stride: usize, size: (usize, usize), main: &Nv12Planes, auxiliary: &Nv12Planes) -> bool {
-        self.converter.convert(bgra, stride, size, (main.y, main.y_stride), |top, band| {
+        self.converter.convert(bgra, stride, size, (main.y, main.y_stride), self.threads, |top, band| {
             // Bands start on even rows, so a band's chroma rows start at half its first row.
             avc444::write_main_chroma(band, main.cbcr.add(top / 2 * main.cbcr_stride), main.cbcr_stride);
             let auxiliary = Nv12Planes {
@@ -215,6 +225,8 @@ pub struct H264Encoder {
     unsent: bool,
     changed_at: Instant,
     avc444: Option<Box<Avc444>>,
+    /// Set while an AVC444 encoder makes main views only, which clients take as AVC420 frames.
+    main_only: bool,
 }
 
 // The session is only driven from the thread that owns the encoder; VideoToolbox calls the
@@ -223,27 +235,31 @@ unsafe impl Send for H264Encoder {}
 
 impl H264Encoder {
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
-        Self::open(width, height, fps, false)
+        Self::open(width, height, fps, None)
     }
 
-    /// An encoder for AVC444v2, whose frames carry both views of the picture. It needs a size
-    /// that [`avc444::fits`] and the low-latency session with long-term references; where either
-    /// is missing, AVC420 is what is left.
-    pub fn new_avc444(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+    /// An encoder for AVC444v2, whose frames carry both views of the picture, converting colours
+    /// on up to `threads` threads. It needs a size that [`avc444::fits`] and the low-latency
+    /// session with long-term references; where either is missing, AVC420 is what is left.
+    pub fn new_avc444(width: u32, height: u32, fps: u32, threads: usize) -> Result<Self, EncodeError> {
         if !avc444::fits(width, height) {
             return Err(EncodeError(format!("{width}x{height} does not fit the AVC444 layout")));
         }
-        Self::open(width, height, fps, true)
+        Self::open(width, height, fps, Some(threads))
     }
 
-    fn open(width: u32, height: u32, fps: u32, avc444: bool) -> Result<Self, EncodeError> {
+    /// `avc444` holds the conversion threads of an AVC444 encoder.
+    fn open(width: u32, height: u32, fps: u32, avc444: Option<usize>) -> Result<Self, EncodeError> {
         if width == 0 || height == 0 {
             return Err(EncodeError("empty frame size".into()));
         }
         let fps = fps.clamp(1, 120) as i32;
         let sink = Box::new(Mutex::new(Sink::default()));
         let converter = Converter::new().ok_or_else(|| EncodeError("vImage has no BT.709 conversion".into()))?;
-        let avc444 = if avc444 { Some(Box::new(Avc444::new(fps)?)) } else { None };
+        let avc444 = match avc444 {
+            Some(threads) => Some(Box::new(Avc444::new(fps, threads)?)),
+            None => None,
+        };
         let bitrate = target_bitrate(width, height, fps as u32);
         let now = Instant::now();
 
@@ -270,7 +286,13 @@ impl H264Encoder {
         unsafe {
             set(&session, kVTCompressionPropertyKey_RealTime, yes.as_ref())?;
             set(&session, kVTCompressionPropertyKey_AllowFrameReordering, no.as_ref())?;
-            set(&session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Main_AutoLevel.as_ref())?;
+            let macroblocks = width.div_ceil(16) * height.div_ceil(16);
+            let level = if avc444.is_some() && macroblocks <= LEVEL_5_0_MACROBLOCKS {
+                kVTProfileLevel_H264_Main_5_0
+            } else {
+                kVTProfileLevel_H264_Main_AutoLevel
+            };
+            set(&session, kVTCompressionPropertyKey_ProfileLevel, level.as_ref())?;
             set(&session, kVTCompressionPropertyKey_AverageBitRate, rate.as_ref())?;
             set(&session, kVTCompressionPropertyKey_ExpectedFrameRate, expected_fps.as_ref())?;
             set(&session, kVTCompressionPropertyKey_MaxKeyFrameInterval, key_interval.as_ref())?;
@@ -295,6 +317,7 @@ impl H264Encoder {
             unsent: false,
             changed_at: now,
             avc444,
+            main_only: false,
         })
     }
 
@@ -305,6 +328,20 @@ impl H264Encoder {
     /// Whether the encoder makes AVC444's views rather than AVC420 frames.
     pub fn avc444(&self) -> bool {
         self.avc444.is_some()
+    }
+
+    /// Whether an AVC444 encoder makes main views only, to be sent as AVC420 frames.
+    pub fn main_only(&self) -> bool {
+        self.main_only
+    }
+
+    /// Makes an AVC444 encoder encode main views only, or both views again. Either way the
+    /// next frame is a key frame, since the client decodes the two kinds of stream separately.
+    pub fn set_main_only(&mut self, main_only: bool) {
+        if self.avc444.is_some() && self.main_only != main_only {
+            self.main_only = main_only;
+            self.key_frame_requested = true;
+        }
     }
 
     /// The bitrate chosen for this size and frame rate, in bits per second.
@@ -335,6 +372,13 @@ impl H264Encoder {
     /// Makes the next encoded frame a key frame, for a client that joins or lost a frame.
     pub fn request_key_frame(&mut self) {
         self.key_frame_requested = true;
+    }
+
+    /// Sends the newest picture again as a key frame, for a client that asked for the whole
+    /// picture: from [`H264Encoder::refine`] while the screen is still, else with the next frame.
+    pub fn resend(&mut self) {
+        self.key_frame_requested = true;
+        self.unsent = self.latest.is_some();
     }
 
     /// Encodes one BGRA frame of the encoder's size. `Ok(None)` when VideoToolbox dropped the
@@ -422,7 +466,7 @@ impl H264Encoder {
         let Some(mut frame) = self.encode_view(pixels, qp, View::Main)? else {
             return Ok(None);
         };
-        if let Some(auxiliary) = self.avc444.as_ref().and_then(|a| a.auxiliary.clone()) {
+        if let Some(auxiliary) = self.avc444.as_ref().filter(|_| !self.main_only).and_then(|a| a.auxiliary.clone()) {
             frame.auxiliary = self.encode_view(&auxiliary, qp, View::Auxiliary)?.map(|view| view.data);
         }
         let now = Instant::now();
@@ -684,6 +728,13 @@ impl Drop for H264Encoder {
     }
 }
 
+/// Threads for AVC444's colour conversion when it may use several. At 4K on the M4, 4
+/// performance and 6 efficiency cores, six cut the conversion from about 15 to 8.5 ms a frame;
+/// more measured no faster.
+pub fn conversion_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get).min(6)
+}
+
 /// Bits per second for a session size and frame rate.
 pub fn target_bitrate(width: u32, height: u32, fps: u32) -> u32 {
     (f64::from(width) * f64::from(height) * f64::from(fps.max(1)) * BITS_PER_PIXEL).clamp(MIN_BITRATE, MAX_BITRATE) as u32
@@ -797,6 +848,11 @@ fn annex_b(sample: &CMSampleBuffer) -> Option<EncodedFrame> {
     }
 
     let mut data = Vec::with_capacity(len + 128);
+    // An access unit delimiter marks where each picture starts. H.264 leaves it optional; it is
+    // here for decoders that go by it (see docs/refresh.md). Its payload says which slice types
+    // follow: I only, or I and P.
+    data.extend_from_slice(&START_CODE);
+    data.extend_from_slice(&[ACCESS_UNIT_DELIMITER, if key_frame { 0x10 } else { 0x30 }]);
     if key_frame {
         for index in 0..count {
             let mut set: *const u8 = ptr::null();
@@ -879,10 +935,12 @@ mod tests {
         let mut frame = vec![0u8; (w * h * 4) as usize];
         let first = encoder.encode(&frame, (w * 4) as usize).expect("encode").expect("frame");
         assert!(first.key_frame);
-        assert_eq!(&first.data[..4], &START_CODE);
-        assert_eq!(first.data[4] & 0x1F, 7, "an SPS leads a key frame");
+        assert_eq!(&first.data[..6], &[0, 0, 0, 1, ACCESS_UNIT_DELIMITER, 0x10], "a delimiter leads every picture");
+        assert_eq!(&first.data[6..10], &START_CODE);
+        assert_eq!(first.data[10] & 0x1F, 7, "then the SPS of a key frame");
         frame.iter_mut().step_by(7).for_each(|b| *b = 0x80);
         let second = encoder.encode(&frame, (w * 4) as usize).expect("encode").expect("frame");
+        assert_eq!(&second.data[..6], &[0, 0, 0, 1, ACCESS_UNIT_DELIMITER, 0x30]);
         assert!(!second.key_frame);
         encoder.set_bitrate(1_000_000).expect("bitrate change mid-stream");
         assert!(encoder.encode(&frame, (w * 4) as usize).expect("encode").is_some());
@@ -906,6 +964,23 @@ mod tests {
         frame.iter_mut().step_by(5).for_each(|b| *b = 0);
         encoder.stage(&frame, stride).expect("stage");
         assert!(encoder.refine().expect("refine").is_some(), "a held frame goes out at once");
+    }
+
+    #[test]
+    fn resends_the_still_picture_as_a_key_frame() {
+        let (w, h) = (320usize, 240usize);
+        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30, 1).expect("AVC444 encoder");
+        encoder.resend();
+        assert!(encoder.refine().expect("refine").is_none(), "no picture to resend yet");
+        let frame = coloured_text(w, h);
+        encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        std::thread::sleep(REFINE_AFTER + Duration::from_millis(50));
+        while encoder.refine().expect("refine").is_some() {
+            std::thread::sleep(REFINE_AFTER + Duration::from_millis(50));
+        }
+        encoder.resend();
+        let again = encoder.refine().expect("refine").expect("the picture again at once");
+        assert!(again.key_frame && again.auxiliary.is_some());
     }
 
     /// Lines of red, green and blue text on white, whose colour 4:2:0 smears.
@@ -936,7 +1011,7 @@ mod tests {
     #[test]
     fn avc444_frames_carry_both_views_each_predicted_from_its_kind() {
         let (w, h) = (320usize, 240usize);
-        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30).expect("AVC444 encoder");
+        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30, 2).expect("AVC444 encoder");
         assert!(encoder.avc444());
         let mut frame = coloured_text(w, h);
         let first = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
@@ -963,7 +1038,49 @@ mod tests {
     }
 
     #[test]
+    fn main_views_only_while_asked_each_switch_a_key_frame() {
+        let (w, h) = (320usize, 240usize);
+        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30, 1).expect("AVC444 encoder");
+        let mut frame = coloured_text(w, h);
+        let first = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        let main = first.data.len();
+        views_of_a_small_change(&mut encoder, &mut frame, w, 50);
+
+        encoder.set_main_only(true);
+        assert!(encoder.main_only());
+        frame[(120 * w + 40) * 4..][..24].copy_from_slice(&[0, 150, 0, 255].repeat(6));
+        let switched = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        assert!(switched.key_frame && switched.auxiliary.is_none(), "main view only, from a key frame");
+        frame[(130 * w + 40) * 4..][..24].copy_from_slice(&[0, 150, 0, 255].repeat(6));
+        let moving = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        assert!(!moving.key_frame && moving.auxiliary.is_none());
+        assert!(moving.data.len() * 10 < main, "main views keep predicting from each other");
+
+        encoder.set_main_only(false);
+        frame[(140 * w + 40) * 4..][..24].copy_from_slice(&[0, 150, 0, 255].repeat(6));
+        let back = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        assert!(back.key_frame && back.auxiliary.is_some(), "both views again, from a key frame");
+        let typed = views_of_a_small_change(&mut encoder, &mut frame, w, 80);
+        assert!(typed.0 * 10 < main, "{typed:?}");
+    }
+
+    /// macOS 27 keeps one long-term reference fewer than macOS 26: with four reference frames
+    /// every third view came without a token and the next view of its kind cost nearly a key frame.
+    #[test]
+    fn every_view_of_a_long_run_predicts_from_its_kind() {
+        let (w, h) = (320usize, 240usize);
+        let mut encoder = H264Encoder::new_avc444(w as u32, h as u32, 30, 1).expect("AVC444 encoder");
+        let mut frame = coloured_text(w, h);
+        let first = encoder.encode(&frame, w * 4).expect("encode").expect("frame");
+        let (main, auxiliary) = (first.data.len(), first.auxiliary.as_ref().expect("an auxiliary view").len());
+        for i in 0..12 {
+            let typed = views_of_a_small_change(&mut encoder, &mut frame, w, 20 + i * 10);
+            assert!(typed.0 * 10 < main && typed.1 * 10 < auxiliary, "change {i}: {typed:?}");
+        }
+    }
+
+    #[test]
     fn avc444_needs_whole_macroblock_widths() {
-        assert!(H264Encoder::new_avc444(1366, 768, 30).is_err());
+        assert!(H264Encoder::new_avc444(1366, 768, 30, 1).is_err());
     }
 }

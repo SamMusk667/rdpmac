@@ -91,18 +91,29 @@ struct DaemonSettings: Codable, Equatable {
     var security: String?
     var pamService: String?
     var codec: String?
+    var parallelConversion: Bool?
     var clipboard: Bool?
+    var audio: Bool?
+    var muteMac: Bool?
+    /// Set by hand in the file; not shown, only kept when saving.
+    var audioRate: Int?
     var resolution: String?
     var virtualDisplay: String?
     var fps: Int?
     var cursorHz: Int?
     var cert: String?
     var key: String?
+    /// A diagnostic set by hand in the file; not shown, only kept when saving.
+    var h264Dump: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case listen, auth, security, codec, clipboard, resolution, fps, cert, key
+        case listen, auth, security, codec, clipboard, audio, resolution, fps, cert, key
         case pamService = "pam-service"
         case virtualDisplay = "virtual-display"
+        case parallelConversion = "parallel-conversion"
         case cursorHz = "cursor-hz"
+        case muteMac = "mute-mac"
+        case audioRate = "audio-rate"
+        case h264Dump = "h264-dump"
     }
 }

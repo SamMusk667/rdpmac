@@ -4,7 +4,8 @@
 //! Requests are `{"cmd": ...}` with `status`, `request_permissions`, `get_config`,
 //! `set_config` (`settings`: the whole file), `import_certificate` (`cert_pem`, `key_pem`),
 //! `nla_enroll` (`password`), `nla_remove` and `restart`. Every answer carries `"ok"`, and
-//! `"error"` when it is false. The status says `restart_needed` when a permission was granted
+//! `"error"` when it is false. `set_config` answers `restart_required`, which is false when the
+//! changes reach the next connection without a restart. The status says `restart_needed` when a permission was granted
 //! after the daemon started, and under `nla` when the user running rdpmacd enrolled for NLA.
 
 use std::fs;
@@ -14,8 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
+use clap::{ArgMatches, FromArgMatches};
 use ironrdp_server::tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use ironrdp_server::TlsIdentityCtx;
+use rdpmac_session::gfx::GfxLink;
 use rdpmac_session::virtual_screen::VirtualScreen;
 use rdpmac_session::SharedGeometry;
 use serde::Deserialize;
@@ -25,6 +28,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, info, warn};
 
+use crate::config::Args;
 use crate::nla;
 use crate::settings::Settings;
 use crate::status::Tracker;
@@ -63,6 +67,11 @@ pub struct Control {
     /// The permissions when the daemon started. macOS applies a permission granted later only
     /// to a new process, and the screen recording check keeps answering as it did at launch.
     pub permissions_at_start: screenio_core::SessionInfo,
+    /// The graphics pipeline, when H.264 is on, whose codec and conversion choices saved settings
+    /// change for the next connection.
+    pub gfx: Option<Arc<GfxLink>>,
+    /// The command line, whose values win over saved settings.
+    pub matches: ArgMatches,
 }
 
 pub fn socket_path(data_dir: &Path) -> PathBuf {
@@ -152,7 +161,7 @@ impl Control {
             Command::SetConfig { settings } => match settings.save(&self.config_path) {
                 Ok(()) => {
                     info!(path = %self.config_path.display(), "settings saved");
-                    json!({ "ok": true, "restart_required": true })
+                    json!({ "ok": true, "restart_required": self.apply(&settings) })
                 }
                 Err(e) => failure(format!("{e:#}")),
             },
@@ -174,6 +183,25 @@ impl Control {
             // Answered by `handle`, since checking the password takes a while.
             Command::NlaEnroll { .. } => failure("enrollment is answered asynchronously"),
         }
+    }
+
+    /// Hands saved settings that need no restart to the next connection; says whether the rest
+    /// needs one.
+    fn apply(&self, saved: &Settings) -> bool {
+        let mut args = match Args::from_arg_matches(&self.matches) {
+            Ok(args) => args,
+            Err(e) => {
+                warn!(%e, "reading the command line again failed");
+                return true;
+            }
+        };
+        saved.apply(&mut args, &self.matches);
+        if let Some(gfx) = &self.gfx {
+            let options = crate::gfx_options(&args);
+            info!(?options, "the next connection uses the saved codec settings");
+            gfx.set_options(options);
+        }
+        self.effective.restart_needed(&Settings::effective(&args))
     }
 
     async fn enroll(&self, password: String) -> Value {

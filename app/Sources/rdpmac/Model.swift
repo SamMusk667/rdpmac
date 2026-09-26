@@ -161,8 +161,9 @@ final class Model: ObservableObject {
 
     func saveSettings(_ settings: DaemonSettings) throws {
         let client = ControlClient()
-        try client.save(settings)
-        try client.restart()
+        if try client.save(settings) {
+            try client.restart()
+        }
         refreshSoon()
     }
 

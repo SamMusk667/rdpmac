@@ -17,6 +17,7 @@ ironrdp-egfx.workspace = true
 ironrdp-dvc.workspace = true
 ironrdp-svc.workspace = true
 ironrdp-cliprdr.workspace = true
+ironrdp-rdpsnd.workspace = true
 ironrdp-core.workspace = true
 tokio.workspace = true
 async-trait.workspace = true

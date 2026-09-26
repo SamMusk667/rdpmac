@@ -37,6 +37,11 @@ const STATS_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_POLL: Duration = Duration::from_secs(1);
 /// How long a session start waits for a display to wake.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a client's request for no picture must stand before the picture stops: mstsc makes
+/// one while it connects, and some clients flap it under load.
+const SUPPRESS_AFTER: Duration = Duration::from_secs(1);
+/// How often a stopped picture checks whether the client wants it again.
+const SUPPRESSED_POLL: Duration = Duration::from_millis(100);
 
 /// How the session size is chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +71,8 @@ struct Session {
     /// Set when the client asks for a new size mid-session; the frame thread answers with a
     /// `Resize`.
     resize_pending: AtomicBool,
+    /// Set when the client asks for the whole picture again; the frame thread sends it.
+    refresh_requested: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -130,6 +137,8 @@ pub struct DisplayHandler {
     #[cfg(target_os = "macos")]
     gfx: Option<Arc<crate::gfx::GfxLink>>,
     virtual_screen: Option<Arc<VirtualScreen>>,
+    /// IronRDP's flag for a client that asked for no picture.
+    suppressed: Option<Arc<AtomicBool>>,
 }
 
 impl DisplayHandler {
@@ -152,7 +161,15 @@ impl DisplayHandler {
             #[cfg(target_os = "macos")]
             gfx: None,
             virtual_screen: None,
+            suppressed: None,
         }
+    }
+
+    /// Stops the picture while the client asks for none, as mstsc does while minimised, with
+    /// the flag IronRDP keeps for that (`with_display_suppressed_handle`).
+    pub fn with_suppression(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.suppressed = Some(flag);
+        self
     }
 
     /// Serves sessions that follow the client from a virtual display at the client's size when
@@ -261,6 +278,10 @@ impl RdpServerDisplay for DisplayHandler {
         self.session.resize_pending.store(true, Ordering::Release);
     }
 
+    fn request_refresh(&mut self) {
+        self.session.refresh_requested.store(true, Ordering::Release);
+    }
+
     async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
         let geometry = self.refresh();
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
@@ -275,6 +296,7 @@ impl RdpServerDisplay for DisplayHandler {
             tx,
             #[cfg(target_os = "macos")]
             gfx: self.gfx.clone(),
+            suppressed: self.suppressed.clone(),
         };
         let frames = producer(tx.clone());
         let cursor = producer(tx);
@@ -373,6 +395,60 @@ struct Producer {
     tx: Sender<DisplayUpdate>,
     #[cfg(target_os = "macos")]
     gfx: Option<Arc<crate::gfx::GfxLink>>,
+    suppressed: Option<Arc<AtomicBool>>,
+}
+
+/// What the client asked of the picture: none at all (Suppress Output, which mstsc sends while
+/// its window is minimised), or all of it again (Refresh Rect, or Suppress Output lifted).
+struct ClientRequests {
+    /// IronRDP's flag, set while the client asks for no picture.
+    suppressed: Option<Arc<AtomicBool>>,
+    /// Set once the client wanted the picture after this stream sent some: mstsc also asks for
+    /// none while it connects, and honouring that would keep the first picture from it.
+    armed: bool,
+    suppressed_since: Option<Instant>,
+    refreshed_at: Option<Instant>,
+}
+
+impl ClientRequests {
+    fn new(suppressed: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            suppressed,
+            armed: false,
+            suppressed_since: None,
+            refreshed_at: None,
+        }
+    }
+
+    fn none_wanted(&self) -> bool {
+        self.suppressed.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    /// Whether the picture should stop now. `sent` tells whether this stream sent a picture yet.
+    fn stop(&mut self, sent: bool, now: Instant) -> bool {
+        if !self.none_wanted() {
+            self.suppressed_since = None;
+            self.armed |= sent;
+            return false;
+        }
+        let since = *self.suppressed_since.get_or_insert(now);
+        self.armed && now.duration_since(since) >= SUPPRESS_AFTER
+    }
+
+    /// The picture restarts after a stop, complete, which answers any refresh asked for with it.
+    fn resumed(&mut self, now: Instant) {
+        self.refreshed_at = Some(now);
+    }
+
+    /// Whether to send the whole picture again for a refresh the client `requested`; not when one
+    /// went out moments ago, since mstsc asks twice when restored, and clients under load flap.
+    fn refresh(&mut self, requested: bool, now: Instant) -> bool {
+        if !requested || self.refreshed_at.is_some_and(|at| now.duration_since(at) < SUPPRESS_AFTER) {
+            return false;
+        }
+        self.refreshed_at = Some(now);
+        true
+    }
 }
 
 /// How a frame left the server, for the statistics.
@@ -423,11 +499,49 @@ impl Route {
         #[cfg(not(target_os = "macos"))]
         let _ = stats;
     }
+
+    /// The client asked for the whole picture again.
+    fn refresh(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(stream) = self.stream.as_mut() {
+            stream.refresh();
+        }
+    }
+
+    /// The client wants the picture again after asking for none.
+    fn resume(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(stream) = self.stream.as_mut() {
+            stream.resume();
+        }
+    }
 }
 
 impl Producer {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed) || self.tx.is_closed()
+    }
+
+    /// Waits while the client wants no picture; false when the stream ended meanwhile.
+    fn wait_while_suppressed(&self, requests: &ClientRequests) -> bool {
+        info!("the client asked for no picture, as mstsc does while minimised; pausing the picture");
+        while requests.none_wanted() {
+            if self.stopped() {
+                return false;
+            }
+            thread::sleep(SUPPRESSED_POLL);
+        }
+        info!("the client wants the picture again; sending all of it");
+        true
+    }
+
+    /// Sends the whole picture again if the client asked for it.
+    fn answer_refresh(&self, requests: &mut ClientRequests, route: &mut Route) {
+        let requested = self.session.refresh_requested.swap(false, Ordering::AcqRel);
+        if requests.refresh(requested, Instant::now()) {
+            info!("the client asked for the whole picture again");
+            route.refresh();
+        }
     }
 
     /// Answers a pending mid-session size request by announcing the new size. IronRDP restarts
@@ -472,9 +586,22 @@ impl Producer {
         let mut route = Route::new(&self, fps);
         let mut permission_reported = false;
         let mut missing_reported = false;
+        let mut requests = ClientRequests::new(self.suppressed.clone());
+        let mut sent = false;
+        let mut paused = false;
         while !self.stopped() {
             if self.answer_resize() {
                 return;
+            }
+            if paused || requests.stop(sent, Instant::now()) {
+                // Nothing is captured meanwhile; reopening captures the screen as it is by then.
+                if !self.wait_while_suppressed(&requests) {
+                    return;
+                }
+                requests.resumed(Instant::now());
+                route.resume();
+                paused = false;
+                continue;
             }
             // Chosen afresh on every (re)open: display numbers change when displays are replaced,
             // for example when BetterDisplay starts or stops.
@@ -501,9 +628,9 @@ impl Producer {
             store(&self.geometry, Geometry::fitted(&chosen, size.0, size.1));
             let scaled = size != native;
             let opened = if scaled {
-                Capturer::open_scaled(chosen.id, size.0, size.1)
+                Capturer::open_scaled_with_rate(chosen.id, size.0, size.1, fps)
             } else {
-                Capturer::open(chosen.id)
+                Capturer::open_with_rate(chosen.id, fps)
             };
             let mut capturer = match opened {
                 Ok(c) => c,
@@ -528,6 +655,11 @@ impl Producer {
                 if self.session.resize_pending.load(Ordering::Acquire) {
                     break;
                 }
+                if requests.stop(sent, Instant::now()) {
+                    paused = true;
+                    break;
+                }
+                self.answer_refresh(&mut requests, &mut route);
                 if last_poll.elapsed() >= DISPLAY_POLL {
                     last_poll = Instant::now();
                     if display_moved(self.policy.as_ref(), &chosen) {
@@ -539,12 +671,16 @@ impl Producer {
                     Ok(frame) => {
                         let exact = (frame.width, frame.height) == size;
                         match exact.then(|| route.try_h264(frame.data, size.0, size.1, frame.stride as usize)).flatten() {
-                            Some(delivery) => stats.record(delivery),
+                            Some(delivery) => {
+                                sent |= matches!(delivery, Delivery::H264(_));
+                                stats.record(delivery);
+                            }
                             None => {
                                 if let Some(update) = rdpmac_encode::frame_update(&frame, size.0, size.1) {
                                     if !self.offer(DisplayUpdate::Bitmap(update), &mut stats) {
                                         return;
                                     }
+                                    sent = true;
                                 }
                             }
                         }
@@ -571,19 +707,34 @@ impl Producer {
         let mut pattern = TestPattern::new(width, height);
         let mut stats = Stats::default();
         let mut route = Route::new(&self, fps);
+        let mut requests = ClientRequests::new(self.suppressed.clone());
+        let mut sent = false;
         info!(width, height, fps, "test pattern started");
         while !self.stopped() {
             if self.answer_resize() {
                 return;
             }
+            if requests.stop(sent, Instant::now()) {
+                if !self.wait_while_suppressed(&requests) {
+                    return;
+                }
+                requests.resumed(Instant::now());
+                route.resume();
+                continue;
+            }
+            self.answer_refresh(&mut requests, &mut route);
             let started = Instant::now();
             if let Some(update) = pattern.next_frame() {
                 match route.try_h264(&update.data, width, height, update.stride.get()) {
-                    Some(delivery) => stats.record(delivery),
+                    Some(delivery) => {
+                        sent |= matches!(delivery, Delivery::H264(_));
+                        stats.record(delivery);
+                    }
                     None => {
                         if !self.offer(DisplayUpdate::Bitmap(update), &mut stats) {
                             return;
                         }
+                        sent = true;
                     }
                 }
             }
@@ -717,5 +868,47 @@ mod tests {
         h.request_layout(layout(1600, 900));
         assert!(!h.session.resize_pending.load(Ordering::Acquire));
         assert_eq!(h.size().await, size(1920, 1080));
+    }
+
+    #[test]
+    fn the_picture_stops_only_once_a_request_for_none_has_stood_after_one_was_wanted() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut requests = ClientRequests::new(Some(flag.clone()));
+        let t0 = Instant::now();
+        let later = |ms| t0 + Duration::from_millis(ms);
+        // mstsc asks for no picture while it connects: the first picture goes out regardless.
+        assert!(!requests.stop(false, t0));
+        assert!(!requests.stop(true, later(5_000)), "not before the client wanted a picture");
+        flag.store(false, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(5_100)));
+        // Minimised: the picture stops once the request has stood for a moment.
+        flag.store(true, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(6_000)));
+        assert!(!requests.stop(true, later(6_500)), "a flap is not a stop");
+        assert!(requests.stop(true, later(7_000)));
+        // Restored, then a short flap.
+        flag.store(false, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(9_000)));
+        flag.store(true, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(9_100)));
+        flag.store(false, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(9_200)));
+        flag.store(true, Ordering::Relaxed);
+        assert!(!requests.stop(true, later(9_300)), "the flap before does not count towards this one");
+        assert!(!ClientRequests::new(None).stop(true, later(20_000)), "no flag, never stopped");
+    }
+
+    #[test]
+    fn a_refresh_goes_out_once_for_requests_close_together() {
+        let mut requests = ClientRequests::new(None);
+        let t0 = Instant::now();
+        let later = |ms| t0 + Duration::from_millis(ms);
+        assert!(!requests.refresh(false, t0));
+        assert!(requests.refresh(true, t0));
+        assert!(!requests.refresh(true, later(300)), "restoring mstsc asks twice");
+        assert!(requests.refresh(true, later(2_000)));
+        requests.resumed(later(5_000));
+        assert!(!requests.refresh(true, later(5_200)), "the picture sent on resuming answers it");
+        assert!(requests.refresh(true, later(7_000)));
     }
 }

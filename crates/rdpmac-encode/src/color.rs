@@ -122,6 +122,11 @@ pub struct Nv12Planes {
     pub cbcr_stride: usize,
 }
 
+// Only describes memory; the unsafe functions writing through it say who may write which rows,
+// and conversion on several threads writes disjoint rows.
+unsafe impl Send for Nv12Planes {}
+unsafe impl Sync for Nv12Planes {}
+
 pub struct Converter {
     info: Box<ConversionInfo>,
 }
@@ -232,29 +237,52 @@ impl Chroma444 {
 }
 
 /// BGRA to full-range BT.709 4:4:4: luma into a plane of the caller's, chroma a band of rows at a
-/// time into a [`Chroma444`] the caller reads while it is in cache.
+/// time into a [`Chroma444`] the caller reads while it is in cache. On several threads each takes
+/// a strip of whole bands.
 pub struct Converter444 {
     info: Box<ConversionInfo>,
-    packed: Vec<u8>,
-    alpha: Vec<u8>,
-    band: Chroma444,
+    /// One per thread; the first is the calling thread's.
+    scratch: Vec<Scratch>,
 }
 
 // As for `Converter`; the scratch buffers belong to whoever holds the converter.
 unsafe impl Send for Converter444 {}
 
+/// What converting a strip of bands needs besides the conversion info.
+struct Scratch {
+    packed: Vec<u8>,
+    alpha: Vec<u8>,
+    band: Chroma444,
+}
+
+impl Scratch {
+    fn new(width: usize) -> Self {
+        Self {
+            packed: vec![0; width * 4 * BAND],
+            alpha: vec![0; width * BAND],
+            band: Chroma444::new(width, BAND),
+        }
+    }
+}
+
+/// The luma plane, handed to the threads that write disjoint rows of it.
+#[derive(Clone, Copy)]
+struct Luma(*mut u8, usize);
+
+unsafe impl Send for Luma {}
+unsafe impl Sync for Luma {}
+
 impl Converter444 {
     pub fn new() -> Option<Self> {
         Some(Self {
             info: conversion(AYP_CB_CR8_444)?,
-            packed: Vec::new(),
-            alpha: Vec::new(),
-            band: Chroma444::new(0, 0),
+            scratch: Vec::new(),
         })
     }
 
-    /// Converts `width` x `height` BGRA pixels, writing luma rows `y_stride` apart from `y` and
-    /// handing each band's chroma to `band` along with the band's first row.
+    /// Converts `width` x `height` BGRA pixels on up to `threads` threads, writing luma rows
+    /// `y_stride` apart from `y` and handing each band's chroma to `band` along with the band's
+    /// first row. `band` runs on several threads at once, for different rows.
     ///
     /// # Safety
     /// `y` and `y_stride` must describe a writable plane of that many rows and samples.
@@ -264,7 +292,8 @@ impl Converter444 {
         stride: usize,
         (width, height): (usize, usize),
         (y, y_stride): (*mut u8, usize),
-        mut band: impl FnMut(usize, &Chroma444),
+        threads: usize,
+        band: impl Fn(usize, &Chroma444) + Sync,
     ) -> bool {
         if width == 0 || height == 0 || stride < width * 4 || bgra.len() < stride * (height - 1) + width * 4 {
             return false;
@@ -272,55 +301,90 @@ impl Converter444 {
         if y_stride < width {
             return false;
         }
-        self.packed.resize(width * 4 * BAND, 0);
-        self.alpha.resize(width * BAND, 0);
-        if self.band.width != width {
-            self.band = Chroma444::new(width, BAND);
+        let bands = height.div_ceil(BAND);
+        let workers = threads.clamp(1, bands);
+        let strip = bands.div_ceil(workers) * BAND;
+        if self.scratch.first().is_none_or(|s| s.band.width != width) {
+            self.scratch.clear();
         }
-        let mut top = 0;
-        while top < height {
-            let rows = BAND.min(height - top);
-            let src = VImageBuffer {
-                data: bgra.as_ptr().add(top * stride) as *mut c_void,
-                height: rows,
-                width,
-                row_bytes: stride,
-            };
-            let packed = VImageBuffer {
-                data: self.packed.as_mut_ptr().cast(),
-                height: rows,
-                width,
-                row_bytes: width * 4,
-            };
-            let status =
-                vImageConvert_ARGB8888To444AYpCbCr8(&src, &packed, &*self.info, BGRA_AS_ARGB.as_ptr(), NO_FLAGS);
-            if status != 0 {
-                return false;
-            }
-            let plane = |data: *mut u8, row_bytes: usize| VImageBuffer {
-                data: data.cast(),
-                height: rows,
-                width,
-                row_bytes,
-            };
-            // The packed pixels are A, Y', Cb, Cr: split them as if they were A, R, G, B.
-            let status = vImageConvert_ARGB8888toPlanar8(
-                &packed,
-                &plane(self.alpha.as_mut_ptr(), width),
-                &plane(y.add(top * y_stride), y_stride),
-                &plane(self.band.cb.as_mut_ptr(), width),
-                &plane(self.band.cr.as_mut_ptr(), width),
-                NO_FLAGS,
-            );
-            if status != 0 {
-                return false;
-            }
-            self.band.height = rows;
-            band(top, &self.band);
-            top += rows;
+        while self.scratch.len() < workers {
+            self.scratch.push(Scratch::new(width));
         }
-        true
+        let (info, luma, band) = (&*self.info, Luma(y, y_stride), &band);
+        let mut scratch = self.scratch.iter_mut();
+        let Some(own) = scratch.next() else {
+            return false;
+        };
+        std::thread::scope(|scope| {
+            let others: Vec<_> = scratch
+                .zip((strip..height).step_by(strip))
+                .map(|(scratch, top)| {
+                    let rows = top..(top + strip).min(height);
+                    scope.spawn(move || convert_strip(info, bgra, stride, width, rows, luma, scratch, band))
+                })
+                .collect();
+            let mine = convert_strip(info, bgra, stride, width, 0..strip.min(height), luma, own, band);
+            others.into_iter().fold(mine, |ok, other| other.join().unwrap_or(false) && ok)
+        })
     }
+}
+
+/// Converts `rows`, a band at a time.
+///
+/// # Safety
+/// As for [`Converter444::convert`], for these rows.
+#[allow(clippy::too_many_arguments)]
+unsafe fn convert_strip(
+    info: &ConversionInfo,
+    bgra: &[u8],
+    stride: usize,
+    width: usize,
+    rows: std::ops::Range<usize>,
+    Luma(y, y_stride): Luma,
+    scratch: &mut Scratch,
+    band: &(impl Fn(usize, &Chroma444) + Sync),
+) -> bool {
+    let mut top = rows.start;
+    while top < rows.end {
+        let count = BAND.min(rows.end - top);
+        let src = VImageBuffer {
+            data: bgra.as_ptr().add(top * stride) as *mut c_void,
+            height: count,
+            width,
+            row_bytes: stride,
+        };
+        let packed = VImageBuffer {
+            data: scratch.packed.as_mut_ptr().cast(),
+            height: count,
+            width,
+            row_bytes: width * 4,
+        };
+        if vImageConvert_ARGB8888To444AYpCbCr8(&src, &packed, info, BGRA_AS_ARGB.as_ptr(), NO_FLAGS) != 0 {
+            return false;
+        }
+        let plane = |data: *mut u8, row_bytes: usize| VImageBuffer {
+            data: data.cast(),
+            height: count,
+            width,
+            row_bytes,
+        };
+        // The packed pixels are A, Y', Cb, Cr: split them as if they were A, R, G, B.
+        let status = vImageConvert_ARGB8888toPlanar8(
+            &packed,
+            &plane(scratch.alpha.as_mut_ptr(), width),
+            &plane(y.add(top * y_stride), y_stride),
+            &plane(scratch.band.cb.as_mut_ptr(), width),
+            &plane(scratch.band.cr.as_mut_ptr(), width),
+            NO_FLAGS,
+        );
+        if status != 0 {
+            return false;
+        }
+        scratch.band.height = count;
+        band(top, &scratch.band);
+        top += count;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -373,25 +437,53 @@ mod tests {
         assert!(cbcr.iter().all(|&v| v.abs_diff(128) <= 1), "every chroma pair written: {cbcr:?}");
     }
 
+    /// Converts on `threads` threads, gathering the chroma of every band and which bands came.
+    fn convert_444(
+        converter: &mut Converter444,
+        bgra: &[u8],
+        stride: usize,
+        (width, height): (usize, usize),
+        (y, y_stride): (&mut [u8], usize),
+        threads: usize,
+    ) -> (Chroma444, Vec<(usize, usize)>) {
+        let gathered = std::sync::Mutex::new((Chroma444::new(width, height), Vec::new()));
+        let converted = unsafe {
+            converter.convert(bgra, stride, (width, height), (y.as_mut_ptr(), y_stride), threads, |top, band| {
+                let mut gathered = gathered.lock().unwrap();
+                let rows = top * width..(top + band.height) * width;
+                gathered.0.cb[rows.clone()].copy_from_slice(&band.cb[..band.height * width]);
+                gathered.0.cr[rows].copy_from_slice(&band.cr[..band.height * width]);
+                gathered.1.push((top, band.height));
+            })
+        };
+        assert!(converted);
+        let (chroma, mut bands) = gathered.into_inner().unwrap();
+        bands.sort_unstable();
+        (chroma, bands)
+    }
+
+    #[test]
+    fn several_threads_convert_like_one() {
+        let (width, height, stride) = (40usize, 5 * BAND + 6, 40 * 4);
+        let bgra: Vec<u8> = (0..stride * height).map(|i| ((i * 29 + i / stride * 7) % 256) as u8).collect();
+        let mut converter = Converter444::new().expect("vImage conversion");
+        let (mut one, mut four) = (vec![0u8; width * height], vec![0u8; width * height]);
+        let (chroma, bands) = convert_444(&mut converter, &bgra, stride, (width, height), (&mut one, width), 1);
+        let (chroma4, bands4) = convert_444(&mut converter, &bgra, stride, (width, height), (&mut four, width), 4);
+        assert_eq!(bands.len(), 6);
+        assert_eq!(bands4, bands, "every band once, the same bands");
+        assert!(one == four && chroma.cb == chroma4.cb && chroma.cr == chroma4.cr);
+    }
+
     #[test]
     fn converts_to_444_across_bands() {
         // Taller than one band, with a stride wider than the rows.
         let (width, height, stride) = (18usize, BAND + 9, 18 * 4 + 12);
         let bgra: Vec<u8> = (0..stride * height).map(|i| ((i * 37 + i / stride * 11) % 256) as u8).collect();
         let mut converter = Converter444::new().expect("vImage conversion");
-        let mut chroma = Chroma444::new(width, height);
         let y_stride = width + 3;
         let mut y = vec![0u8; y_stride * height];
-        let mut bands = Vec::new();
-        let converted = unsafe {
-            converter.convert(&bgra, stride, (width, height), (y.as_mut_ptr(), y_stride), |top, band| {
-                bands.push((top, band.height));
-                let rows = top * width..(top + band.height) * width;
-                chroma.cb[rows.clone()].copy_from_slice(&band.cb[..band.height * width]);
-                chroma.cr[rows].copy_from_slice(&band.cr[..band.height * width]);
-            })
-        };
-        assert!(converted);
+        let (chroma, bands) = convert_444(&mut converter, &bgra, stride, (width, height), (&mut y, y_stride), 1);
         assert_eq!(bands, [(0, BAND), (BAND, 9)]);
         for row in 0..height {
             for x in 0..width {

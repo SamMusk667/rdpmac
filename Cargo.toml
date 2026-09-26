@@ -26,6 +26,7 @@ ironrdp-dvc = "0.8"
 ironrdp-svc = "0.8"
 ironrdp-cliprdr = "0.7"
 ironrdp-core = "0.2"
+ironrdp-rdpsnd = "0.9"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 async-trait = "0.1"
 anyhow = "1"

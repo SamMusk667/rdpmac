@@ -70,9 +70,15 @@ target/release/rdpmacd --request-permissions
 画面默认在客户端支持时走 H.264（`--codec auto`，VideoToolbox 硬件编码，经图形管线发送，不超过 4096x2304），
 否则走 RemoteFX。客户端支持时 H.264 用 AVC444，带完整色度，彩色文字没有色边；宽度不是 16 的倍数的尺寸用 AVC420。
 `--codec avc420` 只用 AVC420，编码开销约减半；`--codec remotefx` 固定用 RemoteFX（见 `docs/avc444.md`）。
+AVC444 的颜色转换默认分到几个核上做，`--parallel-conversion false` 只用一个核。在 App 的设置里改 AVC444、AVC420 与
+颜色转换，不重启服务端，从下一次连接起生效。
 H.264 按规范用全范围 BT.709；画面停下约 0.2 秒后，服务端
 用更细的量化参数把当前画面再编一次，文字接近无损，变化中的画面则按码率取量化参数。纯文本剪贴板默认双向共享，
-`--no-clipboard` 关闭。
+`--no-clipboard` 关闭。Mac 正在播放的声音默认传到客户端（16 位立体声 PCM，44.1 kHz），`--no-audio` 关闭；客户端播放期间
+Mac 本机静音，`--mute-mac false` 关闭；发送的声音不超过实时，客户端最小化时不发，免得它越放越晚（见 `docs/audio.md`）。
+采集按 `--fps`（默认 30）限速，画面变得更快时中间的帧被跳过，最后一帧不丢。
+mstsc 最小化时画面暂停，不采集也不发送；恢复或客户端要求重画时发完整画面。`--h264-dump` 把发出的 H.264 码流原样录下，
+用来排查客户端花屏（见 `docs/refresh.md`）。
 
 会话分辨率默认跟随客户端（`--resolution follow-client`）：mstsc 的 `/w`、`/h`、全屏、.rdp 里的 `desktopwidth` 与
 `desktopheight` 决定连接时的分辨率，启用动态分辨率时拖动窗口会实时调整。
@@ -95,7 +101,7 @@ H.264 按规范用全范围 BT.709；画面停下约 0.2 秒后，服务端
 ### 设置文件与控制套接字
 
 `~/Library/Application Support/rdpmac/config.toml` 保存设置，键名与命令行参数相同（`listen`、`auth`、`security`、`pam-service`、
-`codec`、`clipboard`、`resolution`、`virtual-display`、`fps`、`cursor-hz`、`cert` 与 `key`），命令行给出的值优先，
+`codec`、`parallel-conversion`、`clipboard`、`audio`、`mute-mac`、`audio-rate`、`resolution`、`virtual-display`、`fps`、`cursor-hz`、`cert`、`key` 与 `h264-dump`），命令行给出的值优先，
 `--config` 可以换文件。未知的键和越界的值会让启动失败并报出原因。
 
 同目录下的 `control.sock` 是给菜单栏 App 用的控制套接字，只允许同一用户连接，每行一个 JSON 请求：`status`、

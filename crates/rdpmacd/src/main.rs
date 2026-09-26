@@ -9,6 +9,7 @@ mod status;
 mod tls;
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -164,6 +165,14 @@ fn nla(args: &Args) -> anyhow::Result<(Arc<dyn CredentialValidator>, Lookup)> {
     })
 }
 
+/// What the graphics pipeline may use under these settings.
+pub fn gfx_options(args: &Args) -> rdpmac_session::gfx::GfxOptions {
+    rdpmac_session::gfx::GfxOptions {
+        avc444: args.codec == Codec::Auto,
+        parallel_conversion: args.parallel_conversion,
+    }
+}
+
 /// macOS checks both permissions against the process responsible for rdpmacd: rdpmacd itself when
 /// launchd starts it, otherwise the terminal app or, over SSH, sshd.
 fn warn_missing_permissions(info: &screenio_core::SessionInfo) {
@@ -264,7 +273,9 @@ async fn main() -> anyhow::Result<()> {
         Resolution::Native => ResolutionMode::Native,
     };
     info!(?mode, "session resolution");
-    let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz);
+    let suppressed = Arc::new(AtomicBool::new(false));
+    let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz)
+        .with_suppression(suppressed.clone());
     // A display of its own only replaces the primary display; a chosen display is served as is.
     let own_display = args.virtual_display == VirtualDisplay::Auto
         && mode == ResolutionMode::FollowClient
@@ -280,7 +291,14 @@ async fn main() -> anyhow::Result<()> {
         }
         None => display_handler,
     };
-    let gfx = (args.codec != Codec::Remotefx).then(|| rdpmac_session::gfx::GfxLink::new(args.codec == Codec::Auto));
+    let log_dir = log_dir()
+        .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join("Library/Logs/rdpmac")))
+        .unwrap_or_else(|| dir.clone());
+    if args.h264_dump {
+        warn!(dir = %log_dir.join("h264").display(), "recording every H.264 stream as sent, up to about 3 GB");
+    }
+    let gfx = (args.codec != Codec::Remotefx)
+        .then(|| rdpmac_session::gfx::GfxLink::new(gfx_options(&args), args.h264_dump.then(|| log_dir.clone())));
     let display_handler = match &gfx {
         Some(link) => display_handler.with_gfx(link.clone()),
         None => display_handler,
@@ -316,14 +334,23 @@ async fn main() -> anyhow::Result<()> {
             Box::new(rdpmac_session::clipboard::ClipboardFactory::new())
                 as Box<dyn ironrdp_server::CliprdrServerFactory>
         }))
-        .with_gfx_factory(gfx.map(|link| {
+        .with_sound_factory((!args.no_audio).then(|| {
+            // Tests on the test pattern have no screen recording permission to capture sound with.
+            let source = match args.test_pattern {
+                Some(_) => rdpmac_session::sound::SoundSource::Tone,
+                None => rdpmac_session::sound::SoundSource::Mac,
+            };
+            Box::new(
+                rdpmac_session::sound::SoundFactory::new(source, args.mute_mac, args.audio_rate)
+                    .with_suppression(suppressed.clone()),
+            ) as Box<dyn ironrdp_server::SoundServerFactory>
+        }))
+        .with_gfx_factory(gfx.clone().map(|link| {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
         }))
+        .with_display_suppressed_handle(suppressed)
         .build();
     server.set_credentials_lookup(lookup);
-    let log_dir = log_dir()
-        .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join("Library/Logs/rdpmac")))
-        .unwrap_or_else(|| dir.clone());
     let control = Arc::new(control::Control {
         tracker,
         geometry: status_geometry,
@@ -336,6 +363,8 @@ async fn main() -> anyhow::Result<()> {
         key,
         started: status::now(),
         permissions_at_start: screenio_core::session_info(),
+        gfx,
+        matches,
     });
     tokio::spawn(async move {
         if let Err(e) = control::serve(control).await {

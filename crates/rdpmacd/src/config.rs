@@ -81,9 +81,32 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = Codec::Auto)]
     pub codec: Codec,
 
+    /// Convert colours for AVC444 on several cores.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub parallel_conversion: bool,
+
     /// Do not share the clipboard with clients.
     #[arg(long)]
     pub no_clipboard: bool,
+
+    /// Do not play the Mac's sound on clients.
+    #[arg(long)]
+    pub no_audio: bool,
+
+    /// Mute the Mac's own sound output while a client plays the sound, as Windows does.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub mute_mac: bool,
+
+    /// Sample rate offered first for the sound, 44100 or 48000. At 48000 mstsc plays slower than
+    /// real time and falls ever further behind.
+    #[arg(long, default_value_t = 44_100, value_parser = parse_rate)]
+    pub audio_rate: u32,
+
+    /// Record the H.264 stream exactly as sent, with the client's acknowledgements, under h264/
+    /// in the log directory, to find out afterwards why a client showed a wrong picture. Keeps
+    /// up to about 3 GB.
+    #[arg(long)]
+    pub h264_dump: bool,
 
     /// How the session resolution is chosen.
     #[arg(long, value_enum, default_value_t = Resolution::FollowClient)]
@@ -151,6 +174,13 @@ fn parse_switch(text: &str) -> Result<(u32, u32, u32), String> {
     let id = id.trim().parse::<u32>().map_err(|e| format!("{id}: {e}"))?;
     let (width, height) = parse_size(size)?;
     Ok((id, width, height))
+}
+
+pub fn parse_rate(text: &str) -> Result<u32, String> {
+    match text.trim().parse::<u32>() {
+        Ok(rate @ (44_100 | 48_000)) => Ok(rate),
+        _ => Err(format!("expected 48000 or 44100, got {text}")),
+    }
 }
 
 fn parse_size(text: &str) -> Result<(u32, u32), String> {

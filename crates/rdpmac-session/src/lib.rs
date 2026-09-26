@@ -8,10 +8,13 @@ pub mod clipboard;
 pub mod cursor;
 pub mod display;
 #[cfg(target_os = "macos")]
+pub mod dump;
+#[cfg(target_os = "macos")]
 pub mod gfx;
 pub mod input;
 pub mod monitor;
 pub mod pattern;
+pub mod sound;
 pub mod virtual_screen;
 
 use std::sync::{Arc, Mutex};

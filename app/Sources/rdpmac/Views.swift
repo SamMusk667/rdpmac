@@ -150,7 +150,12 @@ struct SettingsView: View {
     @State private var followClient = true
     @State private var ownDisplay = true
     @State private var codec = "auto"
+    @State private var parallelConversion = true
+    /// The choices as loaded, to tell whether saving restarts the server.
+    @State private var initial: Choices?
     @State private var clipboard = true
+    @State private var audio = true
+    @State private var muteMac = true
     @State private var fps = 30
     @State private var nla = false
     @State private var password = ""
@@ -172,7 +177,18 @@ struct SettingsView: View {
                 Text("H.264 (AVC420)").tag("avc420")
                 Text("RemoteFX").tag("remotefx")
             }
+            Toggle("Convert colours on several cores", isOn: $parallelConversion)
+                .disabled(codec != "auto")
+            if codec != "remotefx", initial?.h264 == true {
+                Text("The codec and the conversion apply from the next connection, without a restart.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Toggle("Share the clipboard", isOn: $clipboard)
+            Toggle("Play the Mac's sound on the client", isOn: $audio)
+            Toggle("Mute the Mac meanwhile", isOn: $muteMac)
+                .disabled(!audio)
             Stepper("Frame rate: \(fps) per second", value: $fps, in: 5...60, step: 5)
             Toggle("Require Network Level Authentication (NLA)", isOn: $nla)
                 .disabled(model.status?.nla == nil)
@@ -185,7 +201,7 @@ struct SettingsView: View {
             HStack {
                 Spacer()
                 Button("Cancel", action: close)
-                Button("Save and Restart Server", action: save)
+                Button(restarts ? "Save and Restart Server" : "Save", action: save)
                     .keyboardShortcut(.defaultAction)
                     .disabled(loaded == nil)
             }
@@ -204,12 +220,39 @@ struct SettingsView: View {
             followClient = (file.resolution ?? effective?.resolution ?? "follow-client") == "follow-client"
             ownDisplay = (file.virtualDisplay ?? effective?.virtualDisplay ?? "auto") == "auto"
             codec = file.codec ?? effective?.codec ?? "auto"
+            parallelConversion = file.parallelConversion ?? effective?.parallelConversion ?? true
             clipboard = file.clipboard ?? effective?.clipboard ?? true
+            audio = file.audio ?? effective?.audio ?? true
+            muteMac = file.muteMac ?? effective?.muteMac ?? true
             fps = file.fps ?? effective?.fps ?? 30
             nla = (file.security ?? effective?.security ?? "tls") == "nla"
+            initial = choices
         } catch {
             failure = error.localizedDescription
         }
+    }
+
+    /// What saving restarts the server for: everything but the choice between AVC444 and AVC420
+    /// and the colour conversion, which reach the next connection without a restart.
+    private struct Choices: Equatable {
+        var listen: String
+        var followClient: Bool
+        var ownDisplay: Bool
+        var h264: Bool
+        var clipboard: Bool
+        var audio: Bool
+        var muteMac: Bool
+        var fps: Int
+        var nla: Bool
+    }
+
+    private var choices: Choices {
+        Choices(listen: listen, followClient: followClient, ownDisplay: ownDisplay, h264: codec != "remotefx",
+                clipboard: clipboard, audio: audio, muteMac: muteMac, fps: fps, nla: nla)
+    }
+
+    private var restarts: Bool {
+        initial != choices
     }
 
     private func save() {
@@ -219,7 +262,10 @@ struct SettingsView: View {
         settings.resolution = followClient ? "follow-client" : "native"
         settings.virtualDisplay = ownDisplay ? "auto" : "off"
         settings.codec = codec
+        settings.parallelConversion = parallelConversion
         settings.clipboard = clipboard
+        settings.audio = audio
+        settings.muteMac = muteMac
         settings.fps = fps
         settings.security = nla ? "nla" : "tls"
         do {

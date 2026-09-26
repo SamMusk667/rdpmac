@@ -30,7 +30,15 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<Codec>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_conversion: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mute_mac: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_rate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +51,8 @@ pub struct Settings {
     pub cert: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h264_dump: Option<bool>,
 }
 
 impl Settings {
@@ -62,6 +72,9 @@ impl Settings {
     pub fn validate(&self) -> anyhow::Result<()> {
         if let Some(fps) = self.fps {
             ensure!((1..=120).contains(&fps), "fps must be between 1 and 120");
+        }
+        if let Some(rate) = self.audio_rate {
+            crate::config::parse_rate(&rate.to_string()).map_err(anyhow::Error::msg)?;
         }
         if let Some(hz) = self.cursor_hz {
             ensure!((1..=120).contains(&hz), "cursor-hz must be between 1 and 120");
@@ -116,8 +129,20 @@ impl Settings {
         if let (Some(v), true) = (self.codec, unset("codec")) {
             args.codec = v;
         }
+        if let (Some(v), true) = (self.parallel_conversion, unset("parallel_conversion")) {
+            args.parallel_conversion = v;
+        }
         if let (Some(v), true) = (self.clipboard, unset("no_clipboard")) {
             args.no_clipboard = !v;
+        }
+        if let (Some(v), true) = (self.audio, unset("no_audio")) {
+            args.no_audio = !v;
+        }
+        if let (Some(v), true) = (self.mute_mac, unset("mute_mac")) {
+            args.mute_mac = v;
+        }
+        if let (Some(v), true) = (self.audio_rate, unset("audio_rate")) {
+            args.audio_rate = v;
         }
         if let (Some(v), true) = (self.resolution, unset("resolution")) {
             args.resolution = v;
@@ -137,6 +162,22 @@ impl Settings {
                 args.key = Some(key.clone());
             }
         }
+        if let (Some(v), true) = (self.h264_dump, unset("h264_dump")) {
+            args.h264_dump = v;
+        }
+    }
+
+    /// Whether going from these settings in effect to `new` needs a restart. The choice between
+    /// AVC444 and AVC420 and the colour conversion reach the next connection without one; whether
+    /// to use H.264 at all is decided when the server starts.
+    pub fn restart_needed(&self, new: &Self) -> bool {
+        let rest = |s: &Self| Self {
+            codec: None,
+            parallel_conversion: None,
+            ..s.clone()
+        };
+        let h264 = |s: &Self| s.codec.unwrap_or(Codec::Auto) != Codec::Remotefx;
+        rest(self) != rest(new) || h264(self) != h264(new)
     }
 
     /// The settings in effect after flags and file are combined.
@@ -147,13 +188,18 @@ impl Settings {
             security: Some(args.security),
             pam_service: Some(args.pam_service.clone()),
             codec: Some(args.codec),
+            parallel_conversion: Some(args.parallel_conversion),
             clipboard: Some(!args.no_clipboard),
+            audio: Some(!args.no_audio),
+            mute_mac: Some(args.mute_mac),
+            audio_rate: Some(args.audio_rate),
             resolution: Some(args.resolution),
             virtual_display: Some(args.virtual_display),
             fps: Some(args.fps),
             cursor_hz: Some(args.cursor_hz),
             cert: args.cert.clone(),
             key: args.key.clone(),
+            h264_dump: Some(args.h264_dump),
         }
     }
 }
@@ -200,6 +246,32 @@ mod tests {
     }
 
     #[test]
+    fn codec_and_conversion_changes_need_no_restart() {
+        let (args, _) = parse(&[]);
+        let now = Settings::effective(&args);
+        let with = |change: fn(&mut Settings)| {
+            let mut new = now.clone();
+            change(&mut new);
+            now.restart_needed(&new)
+        };
+        assert!(!with(|s| s.codec = Some(Codec::Avc420)));
+        assert!(!with(|s| s.parallel_conversion = Some(false)));
+        assert!(with(|s| s.codec = Some(Codec::Remotefx)), "H.264 is set up at start");
+        assert!(with(|s| s.fps = Some(20)));
+        assert!(with(|s| s.audio = Some(false)), "the sound channel is offered from the start");
+        assert!(with(|s| s.h264_dump = Some(true)), "recording is set up at start");
+        assert!(with(|s| s.mute_mac = Some(false)), "the sound channel takes it at start");
+    }
+
+    #[test]
+    fn the_stream_is_recorded_when_the_file_says_so() {
+        let (mut args, matches) = parse(&[]);
+        assert!(!args.h264_dump);
+        toml::from_str::<Settings>("h264-dump = true").expect("parses").apply(&mut args, &matches);
+        assert!(args.h264_dump);
+    }
+
+    #[test]
     fn unknown_keys_and_bad_values_are_rejected() {
         assert!(toml::from_str::<Settings>("lisen = \"0.0.0.0:3389\"").is_err());
         assert!(toml::from_str::<Settings>("codec = \"h265\"").is_err());
@@ -207,6 +279,8 @@ mod tests {
         assert_eq!(settings.codec, Some(Codec::Avc420));
         let settings: Settings = toml::from_str("fps = 500").expect("parses");
         assert!(settings.validate().is_err());
+        let settings: Settings = toml::from_str("audio-rate = 22050").expect("parses");
+        assert!(settings.validate().is_err(), "only 48000 and 44100");
         let settings: Settings = toml::from_str("cert = \"/tmp/c.pem\"").expect("parses");
         assert!(settings.validate().is_err(), "cert without key");
     }

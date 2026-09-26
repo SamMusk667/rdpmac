@@ -2,7 +2,7 @@
 //! Annex B stream, to inspect the bitstream with ffprobe and measure quality against the source.
 //!
 //!     cargo run --release -p rdpmac-encode --example h264_probe -- \
-//!         WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444]
+//!         WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444] [THREADS]
 //!
 //! Without an input file, or with `-`, the image is a synthetic pattern. Every scenario ends on
 //! the image itself, followed by a second and a half of the refinement a session asks for while
@@ -15,7 +15,7 @@
 //!   for the rate control, then the image.
 //!
 //! With `avc444` every frame is two frames of the stream, the main view and then the auxiliary
-//! view, in the order one decoder decodes them.
+//! view, in the order one decoder decodes them; THREADS (default 1) convert its colours.
 
 use std::io::Write;
 use std::thread::sleep;
@@ -47,7 +47,7 @@ fn synthetic(width: usize, height: usize) -> Vec<u8> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("usage: h264_probe WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444]");
+        eprintln!("usage: h264_probe WIDTH HEIGHT OUT.h264 [IN.bgra|-] [still|scroll|switch] [avc420|avc444] [THREADS]");
         std::process::exit(2);
     }
     let width: u32 = args[1].parse().expect("width");
@@ -76,7 +76,10 @@ fn main() {
 
     let mut encoder = match args.get(6).map_or("avc420", String::as_str) {
         "avc420" => rdpmac_encode::h264::H264Encoder::new(width, height, 30),
-        "avc444" => rdpmac_encode::h264::H264Encoder::new_avc444(width, height, 30),
+        "avc444" => {
+            let threads = args.get(7).map_or(1, |t| t.parse().expect("threads"));
+            rdpmac_encode::h264::H264Encoder::new_avc444(width, height, 30, threads)
+        }
         other => panic!("unknown codec {other}"),
     }
     .expect("encoder");

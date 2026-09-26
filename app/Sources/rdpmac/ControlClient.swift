@@ -83,9 +83,20 @@ struct ControlClient {
         try JSONDecoder().decode(ConfigAnswer.self, from: send(["cmd": "get_config"])).settings
     }
 
-    func save(_ settings: DaemonSettings) throws {
+    /// Whether the server has to restart to apply the settings; the codec choices reach the next
+    /// connection without one.
+    func save(_ settings: DaemonSettings) throws -> Bool {
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings))
-        _ = try send(["cmd": "set_config", "settings": encoded])
+        let reply = try send(["cmd": "set_config", "settings": encoded])
+        return (try? JSONDecoder().decode(SaveAnswer.self, from: reply))?.restartRequired ?? true
+    }
+
+    private struct SaveAnswer: Decodable {
+        let restartRequired: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case restartRequired = "restart_required"
+        }
     }
 
     func requestPermissions() throws {

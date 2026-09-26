@@ -194,3 +194,14 @@ rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进�
   预测，靠长期参考帧让两路各自从上一路同类视图预测，打字时每路只有几 KB。彩色文字的 RGB PSNR 从 28.4 dB 升到 37.0 dB。
   IronRDP 补丁加了 `send_avc444v2_frame`，并修正只含色度的帧的长度字段。设置 `codec = "avc420"` 可以关掉；
   4K 下全屏持续变化时约 18 fps（AVC420 为 30 fps）。本机回环（FreeRDP）通过，你用 mstsc 实测没有问题。
+- 2026-09-25 AVC444 的颜色转换可以用多核（默认最多 6 个线程，每帧快 10% 到 15%）；在 App 里改编码或多核，不重启，
+  从下一次连接起生效，方便实际对比。
+- 2026-09-25 声音：libscreenio 经 ScreenCaptureKit 采集 Mac 播放的声音（C ABI 1.2），rdpmac 用 IronRDP 的 RDPSND
+  以 16 位立体声 PCM 48/44.1 kHz 发给客户端，`audio` 设置可关。回环（FreeRDP，测试音调）通过，真实采集待 mstsc 实测。
+  设计与测试见 `docs/audio.md`。
+- 2026-09-25 屏保时切换窗口后的花屏：客户端最小化时画面暂停，恢复或要求重画时发关键帧并重置码率（IronRDP 补丁加了
+  `request_refresh`）；`h264-dump` 可把发出的码流原样录下，供下次复现时判断问题在哪一端。见 `docs/refresh.md`。
+- 2026-09-26 录制证实花屏是 mstsc 把 AVC444 的两路视图配错了一帧（码流本身正确）。重画和恢复时重置图形状态、每路
+  视图前加访问单元分隔符；采集按 `fps` 真正限速（原来最高 60 fps）。声音：按规范填 `wTimeStamp`，按客户端确认记录
+  播放延迟，落后超过 400 ms 时跳过一段追回 150 ms；`mute-mac`（默认开）在客户端播放期间静音 Mac。见 `docs/refresh.md`
+  和 `docs/audio.md`。
