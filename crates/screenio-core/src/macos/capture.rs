@@ -36,6 +36,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Largest output side accepted for scaled capture; RDP itself stops at 8192.
 const MAX_OUTPUT_SIDE: u32 = 16384;
 const MAX_FPS: i32 = 60;
+/// The highest rate a caller may ask for; ProMotion displays refresh at 120 Hz.
+const MAX_RATE: u32 = 120;
 const QUEUE_DEPTH: isize = 3;
 /// SCStreamErrorUserDeclined: screen recording was not granted to this process.
 const SC_ERROR_USER_DECLINED: isize = -3801;
@@ -164,8 +166,16 @@ impl StreamOutput {
     }
 }
 
-fn describe(error: &NSError) -> String {
+pub(super) fn describe(error: &NSError) -> String {
     format!("{} ({})", error.localizedDescription(), error.code())
+}
+
+/// A frame rate a caller asked for, as the stream configuration takes it.
+fn frame_rate(max_fps: u32) -> Result<i32> {
+    if !(1..=MAX_RATE).contains(&max_fps) {
+        return Err(Error::Invalid);
+    }
+    Ok(max_fps as i32)
 }
 
 fn map_error(error: Option<&NSError>) -> Error {
@@ -181,7 +191,7 @@ fn map_error(error: Option<&NSError>) -> Error {
 struct SendRetained<T>(Retained<T>);
 unsafe impl<T> Send for SendRetained<T> {}
 
-fn shareable_content() -> Result<Retained<SCShareableContent>> {
+pub(super) fn shareable_content() -> Result<Retained<SCShareableContent>> {
     let (tx, rx) = mpsc::channel::<std::result::Result<SendRetained<SCShareableContent>, Error>>();
     let handler = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
         let result = match unsafe { Retained::retain(content) } {
@@ -202,7 +212,7 @@ fn shareable_content() -> Result<Retained<SCShareableContent>> {
     }
 }
 
-fn start(stream: &SCStream) -> Result<()> {
+pub(super) fn start(stream: &SCStream) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Option<Error>>();
     let handler = RcBlock::new(move |error: *mut NSError| {
         let failed = unsafe { error.as_ref() }.map(|e| map_error(Some(e)));
@@ -233,7 +243,7 @@ unsafe impl Send for Capturer {}
 
 impl Capturer {
     pub fn open(display_id: u32) -> Result<Self> {
-        Self::open_with(display_id, None)
+        Self::open_with(display_id, None, MAX_FPS)
     }
 
     /// Captures the display scaled to `width` x `height`. ScreenCaptureKit does the scaling on
@@ -242,10 +252,23 @@ impl Capturer {
         if !(1..=MAX_OUTPUT_SIDE).contains(&width) || !(1..=MAX_OUTPUT_SIDE).contains(&height) {
             return Err(Error::Invalid);
         }
-        Self::open_with(display_id, Some((width, height)))
+        Self::open_with(display_id, Some((width, height)), MAX_FPS)
     }
 
-    fn open_with(display_id: u32, output: Option<(u32, u32)>) -> Result<Self> {
+    /// Like [`Capturer::open`], delivering at most `max_fps` frames a second.
+    pub fn open_with_rate(display_id: u32, max_fps: u32) -> Result<Self> {
+        Self::open_with(display_id, None, frame_rate(max_fps)?)
+    }
+
+    /// Like [`Capturer::open_scaled`], delivering at most `max_fps` frames a second.
+    pub fn open_scaled_with_rate(display_id: u32, width: u32, height: u32, max_fps: u32) -> Result<Self> {
+        if !(1..=MAX_OUTPUT_SIDE).contains(&width) || !(1..=MAX_OUTPUT_SIDE).contains(&height) {
+            return Err(Error::Invalid);
+        }
+        Self::open_with(display_id, Some((width, height)), frame_rate(max_fps)?)
+    }
+
+    fn open_with(display_id: u32, output: Option<(u32, u32)>, max_fps: i32) -> Result<Self> {
         let content = shareable_content()?;
         let displays = unsafe { content.displays() };
         let display = displays
@@ -266,7 +289,7 @@ impl Capturer {
             config.setWidth(width as usize);
             config.setHeight(height as usize);
             config.setPixelFormat(kCVPixelFormatType_32BGRA);
-            config.setMinimumFrameInterval(CMTime::new(1, MAX_FPS));
+            config.setMinimumFrameInterval(CMTime::new(1, max_fps));
             config.setQueueDepth(QUEUE_DEPTH);
             // The cursor is reported separately through `cursor_shape`, as a remote desktop
             // protocol draws it on the client side.

@@ -15,7 +15,7 @@ use std::{
 };
 
 pub const SIO_OK: i32 = 0;
-/// No new frame within the timeout.
+/// Nothing new within the timeout: no new frame, or no sound.
 pub const SIO_E_TIMEOUT: i32 = -1;
 /// The capture target changed; reopen the capturer.
 pub const SIO_E_RESET: i32 = -2;
@@ -122,7 +122,19 @@ pub struct sio_session_info_t {
     pub backend: [c_char; 32],
 }
 
+#[repr(C)]
+pub struct sio_audio_chunk_t {
+    /// Interleaved 16-bit samples, valid until the next `sio_audio_read` on the same handle, or
+    /// `sio_audio_close`.
+    pub samples: *const i16,
+    /// Samples of all channels together: frames times channels.
+    pub sample_count: usize,
+    /// When the chunk played, in microseconds from the first chunk read.
+    pub timestamp_us: u64,
+}
+
 pub struct sio_capture_t(sio::Capturer);
+pub struct sio_audio_t(sio::AudioCapture);
 pub struct sio_virtual_display_t(sio::VirtualDisplay);
 pub struct sio_input_t(sio::Input);
 
@@ -138,7 +150,7 @@ fn copy_cstr(dst: &mut [c_char], src: &str) {
 /// The library version as 0xMMmmpp: 0x010100 is 1.1.0.
 #[no_mangle]
 pub extern "C" fn sio_version() -> u32 {
-    0x01_01_00
+    0x01_02_00
 }
 
 #[no_mangle]
@@ -324,6 +336,59 @@ pub unsafe extern "C" fn sio_capture_frame(
 pub unsafe extern "C" fn sio_capture_close(cap: *mut sio_capture_t) {
     if !cap.is_null() {
         drop(Box::from_raw(cap));
+    }
+}
+
+/// Captures what the Mac plays, from all apps but this process, at `sample_rate` (8000, 16000,
+/// 24000, 44100 or 48000 Hz) with one or two channels. Needs the screen recording permission.
+/// Since 1.2.
+#[no_mangle]
+pub unsafe extern "C" fn sio_audio_open(sample_rate: u32, channels: u32, out: *mut *mut sio_audio_t) -> i32 {
+    if out.is_null() {
+        return SIO_E_INVALID;
+    }
+    guard(|| match sio::AudioCapture::open(sample_rate, channels) {
+        Ok(a) => {
+            *out = Box::into_raw(Box::new(sio_audio_t(a)));
+            SIO_OK
+        }
+        Err(e) => code(e),
+    })
+}
+
+/// Waits up to `timeout_ms` for the next chunk; `SIO_E_TIMEOUT` while nothing plays. Sound left
+/// unread beyond about a second is dropped. `SIO_E_RESET` means the stream stopped: close and
+/// reopen. Since 1.2.
+#[no_mangle]
+pub unsafe extern "C" fn sio_audio_read(
+    audio: *mut sio_audio_t,
+    timeout_ms: u32,
+    out: *mut sio_audio_chunk_t,
+) -> i32 {
+    if audio.is_null() || out.is_null() {
+        return SIO_E_INVALID;
+    }
+    guard(|| {
+        let audio = &mut (*audio).0;
+        match audio.read(Duration::from_millis(timeout_ms as u64)) {
+            Ok(chunk) => {
+                *out = sio_audio_chunk_t {
+                    samples: chunk.samples.as_ptr(),
+                    sample_count: chunk.samples.len(),
+                    timestamp_us: chunk.timestamp.as_micros() as u64,
+                };
+                SIO_OK
+            }
+            Err(e) => code(e),
+        }
+    })
+}
+
+/// Since 1.2.
+#[no_mangle]
+pub unsafe extern "C" fn sio_audio_close(audio: *mut sio_audio_t) {
+    if !audio.is_null() {
+        drop(Box::from_raw(audio));
     }
 }
 

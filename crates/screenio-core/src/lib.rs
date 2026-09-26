@@ -21,7 +21,8 @@ use stub as platform;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// No frame that differs from the previous one arrived within the timeout.
+    /// Nothing new arrived within the timeout: no frame that differs from the previous one, or no
+    /// sound.
     Timeout,
     /// The capture target went away (display change, session switch); reopen the capturer.
     Reset,
@@ -102,6 +103,17 @@ impl Capturer {
         platform::Capturer::open_scaled(display_id, width, height).map(Capturer)
     }
 
+    /// Like [`Capturer::open`], with frames at most `max_fps` (1 to 120) a second instead of
+    /// 60. When the screen changes faster, frames in between are skipped, never the latest one.
+    pub fn open_with_rate(display_id: u32, max_fps: u32) -> Result<Self> {
+        platform::Capturer::open_with_rate(display_id, max_fps).map(Capturer)
+    }
+
+    /// [`Capturer::open_scaled`] with frames at most `max_fps` a second.
+    pub fn open_scaled_with_rate(display_id: u32, width: u32, height: u32, max_fps: u32) -> Result<Self> {
+        platform::Capturer::open_scaled_with_rate(display_id, width, height, max_fps).map(Capturer)
+    }
+
     pub fn width(&self) -> u32 {
         self.0.width()
     }
@@ -113,6 +125,70 @@ impl Capturer {
     /// Waits up to `timeout` for a frame that differs from the last one returned.
     pub fn frame(&mut self, timeout: Duration) -> Result<Frame<'_>> {
         self.0.frame(timeout)
+    }
+}
+
+/// Sound the Mac played, as interleaved 16-bit samples. `samples` stays valid until the next
+/// [`AudioCapture::read`] call or drop.
+pub struct AudioChunk<'a> {
+    pub samples: &'a [i16],
+    /// When the chunk played, counted from the first chunk read.
+    pub timestamp: Duration,
+    /// When the chunk played, counted from when the Mac started up.
+    pub played: Duration,
+    /// How long ago it played when it was read: what capture and queueing added.
+    pub age: Duration,
+}
+
+/// What the Mac plays, from all apps but this process. On macOS it needs the screen recording
+/// permission, like [`Capturer`], and macOS 13.
+pub struct AudioCapture(platform::AudioCapture);
+
+impl AudioCapture {
+    /// Captures at `sample_rate` with one or two channels: 8000, 16000, 24000 or 48000 Hz, which
+    /// ScreenCaptureKit captures at, or 44100 Hz, resampled from a 48000 Hz capture.
+    pub fn open(sample_rate: u32, channels: u32) -> Result<Self> {
+        platform::AudioCapture::open(sample_rate, channels).map(AudioCapture)
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.0.sample_rate()
+    }
+
+    pub fn channels(&self) -> u32 {
+        self.0.channels()
+    }
+
+    /// The sample rate the newest sound came at, which should be [`AudioCapture::sample_rate`];
+    /// `None` before any sound came.
+    pub fn source_rate(&self) -> Option<f64> {
+        self.0.source_rate()
+    }
+
+    /// Waits up to `timeout` for the next chunk. Nothing arrives while nothing plays, and sound
+    /// left unread beyond about a second is dropped, oldest first.
+    pub fn read(&mut self, timeout: Duration) -> Result<AudioChunk<'_>> {
+        self.0.read(timeout)
+    }
+}
+
+/// Mutes the Mac's sound output while it lives, for a session whose client plays the sound
+/// instead; the output gets its own setting back when this drops. Only the output is muted:
+/// apps keep playing, so [`AudioCapture`] can go on capturing them.
+pub struct OutputMute(platform::OutputMute);
+
+impl OutputMute {
+    /// Mutes the default output device. `Ok` also when it was muted already, in which case it
+    /// stays muted afterwards; [`Error::Unsupported`] when the device has no mute, as some
+    /// HDMI outputs do not.
+    pub fn engage() -> Result<Self> {
+        platform::OutputMute::engage().map(OutputMute)
+    }
+
+    /// Follows a change of the default output device: the one muted before gets its setting
+    /// back and the new one is muted.
+    pub fn follow(&mut self) -> Result<()> {
+        self.0.follow()
     }
 }
 

@@ -1,8 +1,8 @@
 //! Interface-only implementation for platforms that have no backend yet.
 
 use crate::{
-    CursorPosition, CursorShape, DisplayInfo, Error, Frame, ModeSwitch, MouseButton, PrivacyPane,
-    Result, SessionInfo,
+    AudioChunk, CursorPosition, CursorShape, DisplayInfo, Error, Frame, ModeSwitch, MouseButton,
+    PrivacyPane, Result, SessionInfo,
 };
 use std::time::Duration;
 
@@ -42,6 +42,42 @@ pub fn wake_displays(_timeout: Duration) -> Result<bool> {
     Err(Error::Unsupported)
 }
 
+pub struct AudioCapture;
+
+impl AudioCapture {
+    pub fn open(_sample_rate: u32, _channels: u32) -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        0
+    }
+
+    pub fn channels(&self) -> u32 {
+        0
+    }
+
+    pub fn source_rate(&self) -> Option<f64> {
+        None
+    }
+
+    pub fn read(&mut self, _timeout: Duration) -> Result<AudioChunk<'_>> {
+        Err(Error::Unsupported)
+    }
+}
+
+pub struct OutputMute;
+
+impl OutputMute {
+    pub fn engage() -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn follow(&mut self) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+}
+
 pub struct Capturer;
 
 impl Capturer {
@@ -50,6 +86,14 @@ impl Capturer {
     }
 
     pub fn open_scaled(_display_id: u32, _width: u32, _height: u32) -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn open_with_rate(_display_id: u32, _max_fps: u32) -> Result<Self> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn open_scaled_with_rate(_display_id: u32, _width: u32, _height: u32, _max_fps: u32) -> Result<Self> {
         Err(Error::Unsupported)
     }
 

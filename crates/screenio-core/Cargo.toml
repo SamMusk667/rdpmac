@@ -41,10 +41,18 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-foundation",
 ] }
 objc2-core-foundation = "0.3"
+objc2-core-audio-types = { version = "0.3", default-features = false, features = [
+    "std",
+    "CoreAudioBaseTypes",
+] }
 objc2-core-media = { version = "0.3", default-features = false, features = [
     "std",
+    "CMBlockBuffer",
+    "CMFormatDescription",
     "CMSampleBuffer",
+    "CMSync",
     "CMTime",
+    "objc2-core-audio-types",
     "objc2-core-video",
 ] }
 objc2-core-video = { version = "0.3", default-features = false, features = [

@@ -43,6 +43,8 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
 * 坐标是操作系统的虚拟桌面坐标；macOS 下是逻辑点，`sio_display_t.scale` 给出每个点对应的采集像素数。
 * `Capturer::open_scaled`（C 接口 `sio_capture_open_scaled`）让 ScreenCaptureKit 在 GPU 上把画面缩放到指定尺寸，
   宽高比不同时居中加黑边。
+* 采集默认每秒最多 60 帧。Rust 接口的 `open_with_rate`、`open_scaled_with_rate` 可以指定 1 到 120 帧；画面变得更快时，
+  中间的帧被跳过，最后一帧不丢。C 接口还没有这两个。
 * 帧是 BGRA、行自上而下、带 stride；`data` 指针到下一次 `sio_capture_frame` 或 `sio_capture_close` 前有效。
   `sio_capture_frame` 只在画面有变化时返回新帧，超时返回 `SIO_E_TIMEOUT`；采集流被系统停止（显示器断开等）
   返回 `SIO_E_RESET`，此时应关闭并重新打开。
@@ -62,6 +64,15 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   `declare_user_activity`（C 接口 `sio_declare_user_activity`）的效果与 `caffeinate -u` 相同，远程桌面服务在
   会话开始时和收到远程输入时调用它。`wake_displays`（`sio_wake_displays`）声明活动后，等到有显示器醒来再返回。
   两者从 1.1 起提供。
+* 声音：`AudioCapture`（C 接口 `sio_audio_*`）经 ScreenCaptureKit 采集 Mac 正在播放的声音（本进程的除外），
+  一或两个声道，交织的 16 位样本。8000、16000、24000 和 48000 Hz 直接采；ScreenCaptureKit 只支持这几个采样率，要
+  别的它会悄悄按 48000 采，所以 44100 Hz 由库用 AudioToolbox 的 AudioConverter 从 48000 重采样得到。需要屏幕录制
+  权限和 macOS 13。没有声音在播放时不产出数据，`read` 超时；来不及读的声音超过约一秒就从最旧的丢起。采集流要带一个
+  画面，库请求 2x2、每秒一帧并丢弃它。从 1.2 起提供。Rust 接口的 `source_rate` 给出声音实际的采样率（重采样的按比例
+  折算），用来核对。
+* 输出静音：Rust 接口的 `OutputMute` 在存活期间把默认输出设备静音（Core Audio 设备的静音属性），释放时恢复它原来的
+  设置，`follow` 跟随默认输出设备的更换。只静音输出，App 照常播放。没有静音开关的设备（有些 HDMI 输出）返回
+  `Unsupported`。C 接口还没有。
 * 权限引导：`open_privacy_settings`（C 接口 `sio_open_privacy_settings`）打开"隐私与安全性"里屏幕录制或辅助功能那一页；
   `request_permissions` 负责把进程加进这两个列表。
 * 光标形状按 id 缓存：`cursor_shape_id` 只读一个计数器，适合按帧轮询；id 变了再调 `cursor_shape` 取位图。

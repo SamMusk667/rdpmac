@@ -12,7 +12,7 @@
 
 #define SIO_OK 0
 
-// No new frame within the timeout.
+// Nothing new within the timeout: no new frame, or no sound.
 #define SIO_E_TIMEOUT -1
 
 // The capture target changed; reopen the capturer.
@@ -69,6 +69,8 @@
 
 #define SIO_PANE_ACCESSIBILITY 1
 
+typedef struct sio_audio_t sio_audio_t;
+
 typedef struct sio_capture_t sio_capture_t;
 
 typedef struct sio_input_t sio_input_t;
@@ -101,6 +103,16 @@ typedef struct sio_frame_t {
   // `SIO_FORMAT_*`.
   uint32_t format;
 } sio_frame_t;
+
+typedef struct sio_audio_chunk_t {
+  // Interleaved 16-bit samples, valid until the next `sio_audio_read` on the same handle, or
+  // `sio_audio_close`.
+  const int16_t *samples;
+  // Samples of all channels together: frames times channels.
+  size_t sample_count;
+  // When the chunk played, in microseconds from the first chunk read.
+  uint64_t timestamp_us;
+} sio_audio_chunk_t;
 
 typedef struct sio_cursor_shape_t {
   // Changes whenever the shape changes.
@@ -171,6 +183,21 @@ int32_t sio_capture_open_scaled(uint32_t display_id,
 int32_t sio_capture_frame(struct sio_capture_t *cap, uint32_t timeout_ms, struct sio_frame_t *out);
 
 void sio_capture_close(struct sio_capture_t *cap);
+
+// Captures what the Mac plays, from all apps but this process, at `sample_rate` with one or two
+// channels: 8000, 16000, 24000 or 48000 Hz as ScreenCaptureKit captures, or 44100 Hz resampled
+// from 48000. Needs the screen recording permission. Since 1.2.
+int32_t sio_audio_open(uint32_t sample_rate, uint32_t channels, struct sio_audio_t **out);
+
+// Waits up to `timeout_ms` for the next chunk; `SIO_E_TIMEOUT` while nothing plays. Sound left
+// unread beyond about a second is dropped. `SIO_E_RESET` means the stream stopped: close and
+// reopen. Since 1.2.
+int32_t sio_audio_read(struct sio_audio_t *audio,
+                       uint32_t timeout_ms,
+                       struct sio_audio_chunk_t *out);
+
+// Since 1.2.
+void sio_audio_close(struct sio_audio_t *audio);
 
 int32_t sio_cursor_position(int32_t *x, int32_t *y, uint8_t *visible);
 
