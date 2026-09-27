@@ -54,8 +54,8 @@ and Suppress Output, and clipboard errors that no longer end the session. They a
 `rdpmac/nla` of an IronRDP fork, which `[patch.crates-io]` in Cargo.toml takes from `../IronRDP`:
 
 ```sh
-git clone https://github.com/<SamMusk667>/rdpmac
-git clone --branch rdpmac/nla https://github.com/<SamMusk667>/IronRDP
+git clone https://github.com/SamMusk667/rdpmac
+git clone --branch rdpmac/nla https://github.com/SamMusk667/IronRDP
 cd rdpmac
 cargo build --release
 ```
