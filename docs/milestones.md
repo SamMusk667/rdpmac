@@ -33,7 +33,7 @@ loopback for 15 seconds, 2026-09-24:
 The CPU figures include generating the synthetic picture itself. At all three sizes the client
 received RemoteFX surface bits, with no dropped frames or very few.
 
-## M2 Retina and user experience
+## M2 Retina and experience
 
 | Item | Status |
 |---|---|
