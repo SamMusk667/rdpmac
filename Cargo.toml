@@ -5,6 +5,8 @@ members = [
     "crates/rdpmac-encode",
     "crates/rdpmac-session",
     "crates/rdpmacd",
+    "crates/screenio",
+    "crates/screenio-core",
 ]
 
 [workspace.package]
@@ -15,8 +17,7 @@ license = "AGPL-3.0-only"
 publish = false
 
 [workspace.dependencies]
-# libscreenio has no remote yet; switch to a git dependency pinned to a tag once it does (ADR-0001 D6).
-screenio-core = { path = "../libscreenio/crates/screenio-core" }
+screenio-core = { path = "crates/screenio-core" }
 ironrdp-server = { version = "0.13", default-features = false, features = ["rayon", "helper", "egfx"] }
 ironrdp-pdu = "0.9"
 # Same minor as ironrdp-server 0.13 uses, so the layout type in RdpServerDisplay::request_layout unifies.
