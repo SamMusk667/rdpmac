@@ -174,7 +174,7 @@ rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进�
 | 1 | NLA：凭据库（独立 Mac）与 Kerberos（加入域的 Mac） | 有 `RdpServerSecurity::Hybrid` 与 CredSSP 服务端；NTLM 只认一个预先给定的账号与口令，Kerberos 可传 `KerberosServerConfig`；认证后客户端委派口令 | 给 acceptor 加可插拔的凭据查找，按 ADR 第 6 节用 `[patch.crates-io]` 指向本地 IronRDP 检出，之后提交上游；凭据库在登记时经 PAM 校验、把每用户的 NT 哈希存进钥匙串；Kerberos 用 keytab 里的服务密钥；委派来的口令再经 PAM 校验 |
 | 2 | AVC444 | 图形管线有 AVC444 能力位 | 拆成亮度与色度两路 4:2:0，VideoToolbox 编两路，去掉彩色文字的色边 |
 | 3 | 声音 | 有 `with_sound_factory` 与 RDPSND 服务端 | libscreenio 加系统声音采集（ScreenCaptureKit 音频），协商 PCM 或 AAC |
-| 4 | 剪贴板图片与文件 | cliprdr 有 FileContents 请求与响应 | 图片双向；文件用 FileGroupDescriptorW 加按需读取 |
+| 4 | 剪贴板图片与文件 | cliprdr 有 FileContents 请求与响应 | 图片双向（2026-09-26 完成，见 docs/clipboard.md）；文件用 FileGroupDescriptorW 加按需读取 |
 | 5 | 物理显示器切换模式（D8 第 3 步，默认关闭） | 不涉及 | 用 libscreenio 的 `switch_display_mode` 经辅助进程切换，会话结束恢复原模式 |
 | 6 | MDM 托管配置 | 不涉及 | 读取配置描述文件下发的托管偏好，优先于 config.toml，文档列出全部键 |
 | 7 | 审计与会话录制接口 | 不涉及 | 结构化审计记录（来源、账号、方式、结果、时长）；录制只定义接口 |

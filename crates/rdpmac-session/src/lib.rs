@@ -4,6 +4,7 @@
 //! [`input::InputHandler`] turns RDP keyboard and mouse events into injected input, and
 //! [`monitor::MonitorPolicy`] is the seam where multi-monitor layouts plug in later.
 
+pub mod clip_image;
 pub mod clipboard;
 pub mod cursor;
 pub mod display;
