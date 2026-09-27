@@ -339,9 +339,9 @@ pub unsafe extern "C" fn sio_capture_close(cap: *mut sio_capture_t) {
     }
 }
 
-/// Captures what the Mac plays, from all apps but this process, at `sample_rate` (8000, 16000,
-/// 24000, 44100 or 48000 Hz) with one or two channels. Needs the screen recording permission.
-/// Since 1.2.
+/// Captures what the Mac plays, from all apps but this process, at `sample_rate` with one or two
+/// channels: 8000, 16000, 24000 or 48000 Hz as ScreenCaptureKit captures, or 44100 Hz resampled
+/// from 48000. Needs the screen recording permission. Since 1.2.
 #[no_mangle]
 pub unsafe extern "C" fn sio_audio_open(sample_rate: u32, channels: u32, out: *mut *mut sio_audio_t) -> i32 {
     if out.is_null() {
