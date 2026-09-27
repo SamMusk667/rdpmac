@@ -3,3 +3,5 @@
 .DS_Store
 /build
 /app/.build
+*.ppm
+/crates/screenio/examples/c/screenshot
