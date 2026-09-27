@@ -11,8 +11,8 @@ enum ServerState {
 /// Turns rdpmacd, the daemon inside the app, on and off as a launchd job in the user's session.
 ///
 /// SMAppService only starts an agent from the app bundle when the app is signed with a Team ID
-/// (Developer ID or Apple Development). A build without one, such as a development build or the
-/// free edition built from source, gets a classic LaunchAgent in ~/Library/LaunchAgents that runs
+/// (Developer ID or Apple Development). A build without one, such as a development build or a
+/// copy built from source, gets a classic LaunchAgent in ~/Library/LaunchAgents that runs
 /// the same daemon by its full path.
 enum Server {
     static let label = "com.rdpmac.rdpmacd"
