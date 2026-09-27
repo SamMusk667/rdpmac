@@ -1,4 +1,4 @@
-# V2 · 内置 ImageGen 提示词
+# V2 · Built-in ImageGen prompts
 
 ## rdpV2LightPrompt
 

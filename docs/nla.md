@@ -1,144 +1,195 @@
-# NLA（M4 第 1 项）
+# NLA (M4 item 1)
 
-ADR D4 定下 NLA 支持两种模式：独立 Mac 用每用户的 RDP 凭据库，加入域的 Mac 用 Kerberos 与 keytab。凭据库模式
-2026-09-24 实现并通过本机测试，2026-09-25 你用 mstsc 实测通过；Kerberos 是第二步，要等有 AD 域可测。
+Under ADR-0001 D4, NLA supports two modes: a per-user RDP credential store for standalone Macs,
+and Kerberos with a keytab for Macs joined to a domain. The credential store mode was implemented
+and passed local tests on 2026-09-24, and was verified with mstsc on 2026-09-25. Kerberos is the
+second step and waits for an AD domain to test with.
 
-## 改 IronRDP 之前的验证
+## Verification before changing IronRDP
 
-IronRDP 0.13 有服务端 NLA：`RdpServerBuilder::with_hybrid(acceptor, pub_key)` 让协商只接受 HYBRID 与 HYBRID_EX，
-TLS 之后跑 CredSSP（sspi 的 `CredSspServer`）。rdpmacd 用静态账号预置凭据、`with_hybrid` 加
-`TlsIdentityCtx::pub_key`，sdl-freerdp `/sec:nla` 回环：
+IronRDP 0.13 has server-side NLA: `RdpServerBuilder::with_hybrid(acceptor, pub_key)` makes the
+negotiation accept only HYBRID and HYBRID_EX, and CredSSP (sspi's `CredSspServer`) runs after TLS.
+With rdpmacd presetting the credentials of the static account and calling `with_hybrid` with
+`TlsIdentityCtx::pub_key`, sdl-freerdp `/sec:nla` over loopback gave:
 
-| 情况 | 结果 |
+| Case | Result |
 |---|---|
-| 正确口令 | CredSSP 完成，会话建立，H.264 26.7 fps、无丢帧 |
-| 错误口令 | CredSSP 阶段拒绝，服务端 `LogonDenied: no candidate credential matched`，客户端 `ERRCONNECT_AUTHENTICATION_FAILED` |
-| 只支持 TLS 的客户端 | 协商阶段拒绝，`server requires SecurityProtocol(HYBRID | HYBRID_EX)` |
+| Correct password | CredSSP completes and the session is established; H.264 at 26.7 fps, no dropped frames |
+| Wrong password | Rejected during CredSSP: server `LogonDenied: no candidate credential matched`, client `ERRCONNECT_AUTHENTICATION_FAILED` |
+| Client that supports only TLS | Rejected during negotiation: `server requires SecurityProtocol(HYBRID \| HYBRID_EX)` |
 
-缺口有三个，上游 master 至今相同：
+There are three gaps, and upstream master still has all three:
 
-1. **只有一个账号。** acceptor 的 `CredentialsProxyImpl` 只持有一份 `AuthIdentity`，来自 `RdpServer::set_credentials`；
-   NTLM 要在客户端委派口令之前完成，服务端必须预先知道每个账号的密钥。
-2. **Kerberos 传不进去。** `CredsspSequence::init` 接受 `KerberosServerConfig`，但 ironrdp-server 调
-   `accept_credssp` 时写死了 `None`。
-3. **委派的口令被丢弃。** CredSSP 结束时 sspi 返回客户端委派的凭据（`ServerState::Finished(identity)`），acceptor
-   没有交给调用方，服务端也就无法再用 PAM 核对账号当前是否有效。
+1. **Only one account.** The acceptor's `CredentialsProxyImpl` holds a single `AuthIdentity`, which
+   comes from `RdpServer::set_credentials`. NTLM has to complete before the client delegates the
+   password, so the server must know the key of every account in advance.
+2. **No way to pass Kerberos in.** `CredsspSequence::init` accepts a `KerberosServerConfig`, but
+   ironrdp-server hard-codes `None` when it calls `accept_credssp`.
+3. **The delegated password is discarded.** When CredSSP ends, sspi returns the credentials the
+   client delegated (`ServerState::Finished(identity)`), but the acceptor does not hand them to the
+   caller, so the server cannot also check with PAM whether the account is valid now.
 
-## 实现
+## Implementation
 
-### IronRDP 补丁
+### IronRDP patch
 
-补丁在 `~/works/IronRDP` 的 `rdpmac/nla` 分支上，起点是 11a0810，也就是 crates.io 上 ironrdp 0.13 各 crate 发布时
-所在的提交，源码与发布的逐字相同。rdpmac 的 `Cargo.toml` 用 `[patch.crates-io]` 把 17 个 ironrdp crate 全部指向这个
-检出：只指 acceptor 和 server 的话，它们按路径依赖的兄弟 crate 会和 crates.io 上的各成一份，类型对不上。检出里的
-sspi 锁到 0.21.3，与 rdpmac 和上游 master 一致。补丁只加接口，缺口 1 与 3 已补，缺口 2（Kerberos）留给第二步：
+The patch is on branch `rdpmac/nla` of the IronRDP fork. It starts from 11a0810, the commit the
+ironrdp 0.13 crates on crates.io were published from, whose source is identical to what was
+published. rdpmac's `Cargo.toml` points all 17 ironrdp crates at a checkout of the fork in
+`../IronRDP` with `[patch.crates-io]`: if only acceptor and server pointed there, the sibling
+crates they depend on by path would exist twice, once from the checkout and once from crates.io,
+and the types would not match. The checkout locks sspi to 0.21.3, the same as rdpmac and upstream
+master. The patch only adds interfaces. Gaps 1 and 3 are closed; gap 2 (Kerberos) is left for the
+second step:
 
-- ironrdp-acceptor：`CredsspSequence::init_with_lookup` 与 `accept_credssp_with_lookup` 接受一个 sspi
-  `CredentialsProxy`，按客户端给出的用户名返回口令或 NT 哈希（`$NTLM$:` 加十六进制）；原来的单账号入口不变。CredSSP
-  结束时客户端委派的凭据记入 `AcceptorResult::credentials`，形状与 ClientInfo 里的一样：UPN 整体作为用户名，
-  `域\用户` 拆成用户名和域。
-- ironrdp-server：`RdpServer::set_credentials_lookup`，Hybrid 连接设了查找就用它。已有的 `CredentialValidator` 现在也
-  校验委派来的凭据，文档随之改写；`pub use sspi` 让调用方拿到这些类型。
-- 测试：ironrdp-testsuite-extra 的端到端测试新增三个：已登记账号连上、校验器收到委派的口令；错误口令被拒；未知账号被拒。
-  这三个与原有的 17 个全部通过，改动的 crate 没有新增 clippy 警告。
+- ironrdp-acceptor: `CredsspSequence::init_with_lookup` and `accept_credssp_with_lookup` take an
+  sspi `CredentialsProxy`, which returns the password or the NT hash (`$NTLM$:` followed by hex)
+  for the username the client gives; the original single-account entry points are unchanged. When
+  CredSSP ends, the credentials the client delegated go into `AcceptorResult::credentials`, shaped
+  as in ClientInfo: a UPN is the whole username, and `DOMAIN\user` is split into username and
+  domain.
+- ironrdp-server: `RdpServer::set_credentials_lookup`; a Hybrid connection uses the lookup when one
+  is set. The existing `CredentialValidator` now also validates the delegated credentials, and its
+  documentation is rewritten to match; `pub use sspi` gives callers these types.
+- Tests: three new end-to-end tests in ironrdp-testsuite-extra check that an enrolled account
+  connects and the validator receives the delegated password, that a wrong password is rejected,
+  and that an unknown account is rejected. These three and the existing 17 all pass, and the
+  changed crates have no new clippy warnings.
 
-上游 master 的 acceptor CredSSP 代码自 11a0810 以来没有改过，这部分补丁可以原样搬过去；server.rs 变化很大，要按
-master 重新整理。提交上游 PR 需要你的 GitHub 账号。
+The acceptor's CredSSP code on upstream master has not changed since 11a0810, so this part of the
+patch carries over as it is; server.rs has changed a lot and needs reworking against master.
+Upstream pull requests are still to be opened.
 
-### 凭据库
+### Credential store
 
-- 存的是 NT 哈希：口令 UTF-16LE 编码的 MD4，16 字节，不存口令。它放在登录钥匙串的通用密码里，服务名
-  `com.rdpmac.nla`，账号是 macOS 短用户名，名称显示为 "rdpmac network level authentication"。
-- 钥匙串只让最后写入条目的程序免提示读取，同一用户的其他程序拿不到哈希。rdpmacd 关掉了钥匙串对话框：读不到时
-  直接失败并写日志，不会在没人的 Mac 上弹窗等人。
-- 签名里没有 Apple 团队 ID 时，每次构建都算另一个程序，即使用同一张自签名证书签名。2026-09-25 在登录钥匙串上实测，
-  用两个构建（签名要求相同、cdhash 不同）：
+- The store keeps the NT hash (the MD4 of the password in UTF-16LE, 16 bytes), not the password.
+  The hash is a generic password in the login keychain, with service `com.rdpmac.nla`, the macOS
+  short user name as the account, and "rdpmac network level authentication" as the name shown.
+- The keychain lets only the program that last wrote an item read it without a prompt, so other
+  programs of the same user cannot get the hash. rdpmacd turns off keychain dialogs: when it cannot
+  read an item it fails at once and logs it, instead of putting up a dialog on an unattended Mac and
+  waiting for someone.
+- Without an Apple Team ID in the signature, every build counts as another program, even when
+  signed with the same self-signed certificate. Measured on the login keychain on 2026-09-25 with
+  two builds (same designated requirement, different cdhash):
 
-  | 新构建对旧构建条目的操作 | 结果 |
+  | What the new build does to the old build's item | Result |
   |---|---|
-  | 读取 | errSecAuthFailed（-25293） |
-  | 覆盖写入 | 成功；之后新构建能读，旧构建读不到 |
-  | 删除 | errSecInvalidOwnerEdit（-25244），只有创建条目的那个构建能删 |
+  | Read | errSecAuthFailed (-25293) |
+  | Overwrite | Succeeds; afterwards the new build can read it and the old build cannot |
+  | Delete | errSecInvalidOwnerEdit (-25244); only the build that created the item can delete it |
 
-  所以升级后已登记的账号要重新登记一次，NLA 登录在此之前失败。先前说"同一证书重新签名的程序照常读取"，那是在
-  `security create-keychain` 建的临时钥匙串里测的，临时钥匙串不做这项检查，结论不适用于登录钥匙串。
-- rdpmacd 对此的处理：
-  - 读不到时，启动日志点名这个账号，`status` 的 `nla` 报 `stale: true`、`enrolled: false`，App 的菜单和设置提示升级后
-    重新登记。
-  - 重新登记直接覆盖旧条目，不用先去"钥匙串访问"删除。
-  - 删除登记时，条目若是更早的构建建的、删不掉，就用标记 `removed` 覆盖哈希，读出来等于没有登记；条目本身还留在
-    "钥匙串访问"里，可以在那里删掉。
-- 换成 Developer ID 签名后，钥匙串按团队识别程序，升级就不必重新登记。换签名身份那一次同样要重新登记。
-- 登记可以在 App 设置里输入 Mac 口令完成，也可以发控制命令 `{"cmd":"nla_enroll","password":"…"}`。rdpmacd 先用配置的
-  PAM 服务校验口令，空口令不会送去校验，通过后算出哈希存入钥匙串。只登记 rdpmacd 所属的用户，它服务的正是这个用户的
-  控制台会话。
-- `nla_remove` 删除登记。`status` 的 `nla` 字段报告用户、是否已登记、登记时间（取钥匙串条目的修改时间），以及
-  `stale`：条目由更早的构建写入，本构建读不到，需要重新登记。
-- 改了 Mac 口令后，旧哈希仍能通过 NTLM，但委派来的旧口令过不了 PAM，连接会被拒，这时要重新登记。
+  So after an update an enrolled account has to be enrolled again once, and NLA logons fail until
+  it is. The earlier statement that "a program re-signed with the same certificate reads as before"
+  came from a test in a temporary keychain made with `security create-keychain`. Temporary
+  keychains do not make this check, so the conclusion does not hold for the login keychain.
+- How rdpmacd handles this:
+  - When it cannot read the hash, the startup log names the account, the `nla` field of `status`
+    reports `stale: true` and `enrolled: false`, and the app's menu and settings ask to enroll
+    again after the update.
+  - Enrolling again overwrites the old item; there is no need to delete it in Keychain Access
+    first.
+  - When removing an enrollment whose item an earlier build created and this build cannot delete,
+    rdpmacd overwrites the hash with the marker `removed`, which reads as no enrollment. The item
+    itself stays in Keychain Access and can be deleted there.
+- Once builds are signed with a Developer ID, the keychain recognises the program by its team, and
+  updates no longer need enrolling again. The one update that switches the signing identity still
+  needs it.
+- An account is enrolled by entering the Mac password in the app's settings, or with the control
+  command `{"cmd":"nla_enroll","password":"…"}`. rdpmacd first checks the password with the
+  configured PAM service (an empty password is never sent to be checked), then computes the hash
+  and stores it in the keychain. Only the user rdpmacd belongs to is enrolled: it is that user's
+  console session rdpmacd serves.
+- `nla_remove` removes the enrollment. The `nla` field of `status` reports the user, whether it is
+  enrolled, when it was enrolled (the modification time of the keychain item), and `stale`: an
+  earlier build wrote the item, this build cannot read it, and the account needs enrolling again.
+- After the Mac password changes, the old hash still passes NTLM, but the delegated old password
+  fails PAM and the connection is rejected; the account then has to be enrolled again.
 
-### 连接流程
+### Connection flow
 
-1. X.224 协商只接受 HYBRID 与 HYBRID_EX，之后建立 TLS。
-2. CredSSP：`NlaLookup` 先问失败锁定是否放行，再按用户名（不分大小写）从钥匙串取 NT 哈希。
-3. sspi 完成 NTLMv2 验证和公钥绑定，客户端随后委派口令。
-4. 校验器（失败锁定加 PAM）核对委派来的口令，通过后进入会话。
+1. X.224 negotiation accepts only HYBRID and HYBRID_EX; TLS is set up after it.
+2. CredSSP: `NlaLookup` first asks the lockout whether the account may try, then fetches the NT
+   hash from the keychain by username (case-insensitive).
+3. sspi completes NTLMv2 authentication and the public key binding; the client then delegates the
+   password.
+4. The validator (lockout plus PAM) checks the delegated password; once it passes, the session
+   starts.
 
-未登记的账号在第 2 步就失败，日志写明原因。
+An account that is not enrolled fails at step 2, and the log says why.
 
-### 失败锁定
+### Lockout
 
-NTLM 验证失败时校验器根本不会被调用，所以 `NlaLookup` 在 NTLM 之前就向锁定模块登记一次尝试，先按失败计。校验器接受
-委派来的口令后清零；拒绝时不再重复计数。锁定按去掉域、转成小写后的用户名计，换大小写拿不到更多尝试次数，TLS 模式
-也随之如此。规则与 TLS 模式相同：5 分钟内失败 5 次，锁 5 分钟。
+When NTLM authentication fails, the validator is never called, so `NlaLookup` records an attempt
+with the lockout before NTLM, counting it as a failure up front. The count is cleared once the
+validator accepts the delegated password; a rejection is not counted a second time. The lockout
+counts by username with the domain removed and in lower case, so changing the case gets no extra
+attempts; TLS mode now does the same. The rules are the same as in TLS mode: 5 failures within 5
+minutes lock the account for 5 minutes.
 
-### 设置
+### Settings
 
-`security = "tls" | "nla"`，可以用 `--security`、config.toml 或 App 设置来设，默认 `tls`。选了 `nla` 却没有登记任何
-账号时，启动日志会警告，菜单里也会出现登记入口。`--auth static` 下 NLA 直接用静态口令的哈希，不需要登记，方便开发
-联调。
+`security = "tls" | "nla"`, set with `--security`, config.toml or the app's settings; the default
+is `tls`. When `nla` is chosen but no account is enrolled, the startup log warns and the menu shows
+an item for enrolling. With `--auth static`, NLA uses the hash of the static password directly and
+needs no enrollment, which makes development and integration testing easier.
 
-## 测试（2026-09-24）
+## Tests (2026-09-24)
 
-本机回环测试的服务端是 `rdpmacd --auth static --security nla --test-pattern`，数据目录和端口都单独设。客户端用
-FreeRDP 3 的无界面示例客户端 `sfreerdp`，不开窗口，也不带剪贴板：
+The server for the local loopback tests was `rdpmacd --auth static --security nla --test-pattern`,
+with its own data directory and port. The client was `sfreerdp`, the headless sample client of
+FreeRDP 3, with no window and no clipboard:
 
-| 情况 | 结果 |
+| Case | Result |
 |---|---|
-| 正确口令 | CredSSP 通过，校验器接受委派的口令（`Credential validation accepted`），H.264 会话持续到客户端退出 |
-| 错误口令 | `LogonDenied: no candidate credential matched`，客户端 `ERRCONNECT_AUTHENTICATION_FAILED` |
-| 未登记账号 | 同上，日志写明 `not enrolled` |
-| 只支持 TLS 的客户端 | 协商阶段拒绝 |
-| 连续 5 次失败 | 账号锁 300 秒，之后正确口令也被拒（用户名改成大写同样被拒） |
+| Correct password | CredSSP passes, the validator accepts the delegated password (`Credential validation accepted`), and the H.264 session lasts until the client exits |
+| Wrong password | `LogonDenied: no candidate credential matched`, client `ERRCONNECT_AUTHENTICATION_FAILED` |
+| Account not enrolled | As above; the log says `not enrolled` |
+| Client that supports only TLS | Rejected during negotiation |
+| 5 failures in a row | The account is locked for 300 seconds; while it is, the correct password is rejected too (also with the username in upper case) |
 
-另外：
+Also:
 
-- rdpmac-auth 的钥匙串测试会写登录钥匙串，默认忽略；在图形会话里以一次性 LaunchAgent 运行时，登记、不分大小写读取、
-  列出和删除都通过。经 SSH 或后台会话时登录钥匙串是锁着的，写入会失败。
-- PAM 模式下的控制命令：`status` 的 `nla` 字段、`nla_remove`、空口令被拒都已验证。正确口令的登记要用你的真实口令，
-  留给你在 App 里做。
+- rdpmac-auth's keychain test writes to the login keychain and is ignored by default. Run as a
+  one-off LaunchAgent in a graphical session, it passes enrolling, case-insensitive reading, listing
+  and removing. Over SSH or in a background session the login keychain is locked, and writing
+  fails.
+- Control commands in PAM mode: the `nla` field of `status`, `nla_remove` and the rejection of an
+  empty password are verified. Enrolling with the correct password needs the real password and was
+  left to be done in the app.
 
-### 升级后（2026-09-25）
+### After an update (2026-09-25)
 
-你装上 AVC444 测试版后 mstsc 连不上（0x904，扩展 0x7）：新构建读不到 0.3.1 写入的哈希，CredSSP 失败，mstsc 随后
-不带 NLA 重试也被拒。修复后的验证：
+After the AVC444 test build was installed, mstsc could not connect (0x904, extended error code
+0x7): the new build could not read the hash 0.3.1 had written, CredSSP failed, and mstsc's retry
+without NLA was rejected too. Verification after the fix:
 
-- 两个构建（签名要求相同、内容不同）在登录钥匙串的测试服务下走一遍升级：新构建先读到 `Unreadable`，哈希查找报
-  "another build of rdpmacd stored the hash"；重新登记后能读，旧构建反而读不到；删除时写入标记，之后读作没有登记，
-  再登记又能用；创建条目的构建最后把它删掉。
-- 用新构建以独立数据目录和端口起一个服务端，只读你真实的条目：`status` 报 `enrolled: false, stale: true`，启动日志
-  点名 sammusk667 需要重新登记。没有发登记或删除命令。
+- Two builds (same designated requirement, different contents) went through an update under a
+  test service in the login keychain: the new build first read `Unreadable`, and the hash lookup
+  reported "another build of rdpmacd stored the hash"; after enrolling again it could read, while
+  the old build no longer could; removing wrote the marker, which then read as no enrollment, and
+  enrolling again worked again; finally the build that created the item deleted it.
+- A server started from the new build with its own data directory and port only read the real
+  item: `status` reported `enrolled: false, stale: true`, and the startup log named the account
+  that needs enrolling again. No enroll or remove command was sent.
 
-## 已知限制
+## Known limitations
 
-- 自签名构建每次升级后要重新登记一次，见"凭据库"一节；App 会提示。
-- HYBRID_EX 的早期认证结果在 NTLM 通过时就报成功。如果之后 PAM 拒绝，客户端收到的是 ServerDeniedConnection 断开，
-  而不是"口令错误"。这只在登记后改过口令、或账号被停用时出现。
-- ironrdp-server 一次只处理一个连接，钥匙串在连接的运行时线程上同步读取，耗时几毫秒。
+- With self-signed builds, an account has to be enrolled again once after every update; see
+  "Credential store". The app asks for it.
+- HYBRID_EX's Early User Authorization Result reports success as soon as NTLM passes. If PAM then
+  rejects, the client gets a ServerDeniedConnection disconnect rather than "wrong password". This
+  happens only when the password changed after enrolling, or when the account is disabled.
+- ironrdp-server handles one connection at a time, and the keychain is read synchronously on the
+  connection's runtime thread, which takes a few milliseconds.
 
-## 下一步
+## Next steps
 
-1. 已完成：你在 App 里登记、打开 NLA 后用 mstsc 连接正常（2026-09-25）。改口令之后的情况还没试。
-2. Kerberos：调研 macOS 绑定 AD 后机器账号密钥的来源与生成 keytab 的方式，接入 `KerberosServerConfig`，委派的凭据
-   同样经 PAM 核对。需要一个 AD 域。
-3. 上游 PR：按 master 整理补丁，需要你的 GitHub 账号。
-4. Developer ID 签名：升级后不必重新登记，公证也需要它；需要你的 Apple 开发者账号。
+1. Done: after enrolling in the app and turning NLA on, mstsc connects normally (2026-09-25). What
+   happens after a password change has not been tried yet.
+2. Kerberos: find out where the machine account's keys come from on a Mac bound to AD and how to
+   produce a keytab, pass them in through `KerberosServerConfig`, and check the delegated
+   credentials with PAM as well. Needs an AD domain.
+3. Upstream pull requests: rework the patch against master and open them.
+4. Developer ID signing: updates would no longer need enrolling again, and notarization needs it
+   too. It needs an Apple Developer account.

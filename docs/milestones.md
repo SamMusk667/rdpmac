@@ -1,207 +1,259 @@
-# 里程碑进度
+# Milestones
 
-## M1 第一帧
+The status tables record the state when each was written; the dated notes further down record what
+was verified or changed later.
 
-| 项 | 状态 | 说明 |
+## M1 First frame
+
+| Item | Status | Notes |
 |---|---|---|
-| 服务端仓库骨架 | 完成 | 四个 crate，AGPL-3.0 加商业双许可 |
-| IronRDP 接 libscreenio 显示与输入 | 完成 | 采集与光标线程喂有界通道；注入线程；像素与点换算 |
-| TLS 自签名 | 完成 | rcgen 生成 ECDSA P-256，PEM 存于数据目录 |
-| 密码校验 | 完成，真实账号待验证 | PAM 服务 `checkpw`，直接走 OpenPAM。2026-09-24 修复：`checkpw` 带 `use_first_pass`，密码须在认证前存入 PAM，此前任何账号都会失败；回归测试确认密码送达 OpenDirectory |
-| RemoteFX | 完成 | 由 IronRDP 编码，服务端对连续整帧做差分，只编码变化的 tile |
-| 光标形状与位置 | 完成 | 按形状 id 轮询，2x 位图，96 像素以内 |
-| 锁定键同步 | 完成 | libscreenio `sync_locks`，Caps Lock 通过 IOKit 读写 |
-| `release_all` | 完成 | 会话结束释放全部按键与按钮 |
-| 日志与统计 | 完成 | 每 5 秒一行：帧率、丢帧、原始字节率 |
-| sdl-freerdp 连接 | 完成 | TLS 协商、凭据校验、会话循环、干净断开 |
-| mstsc / Windows App 连接 | 待办 | 需要一台 Windows 客户机 |
-| 真实屏幕画面与键鼠实机验证 | 待办 | 需要宿主进程获得屏幕录制与辅助功能权限 |
-| 1080p RemoteFX 30 fps | 按合成画面达标 | 见下表；真实采集待权限 |
+| Server repository skeleton | Done | Four crates. Licensed AGPL-3.0 with a commercial dual licence at the time; MIT OR Apache-2.0 since 2026-09-27 (ADR-0002) |
+| IronRDP wired to libscreenio for display and input | Done | Capture and cursor threads feed a bounded channel; an input injection thread; conversion between pixels and points |
+| Self-signed TLS | Done | Generated with rcgen, ECDSA P-256, stored as PEM in the data directory |
+| Password check | Done; real accounts to be verified | PAM service `checkpw`, straight through OpenPAM. Fixed on 2026-09-24: `checkpw` passes `use_first_pass`, so the password must be stored in PAM before authentication; until then every account failed. A regression test confirms that the password reaches OpenDirectory |
+| RemoteFX | Done | Encoded by IronRDP; the server diffs consecutive full frames and encodes only the tiles that changed |
+| Cursor shape and position | Done | Polled by shape id; 2x bitmaps, at most 96 pixels |
+| Lock-key sync | Done | libscreenio `sync_locks`; Caps Lock is read and set through IOKit |
+| `release_all` | Done | Every key and button is released when a session ends |
+| Logging and statistics | Done | One line every 5 seconds: frame rate, dropped frames, raw byte rate |
+| sdl-freerdp connection | Done | TLS negotiation, credential validation, session loop, clean disconnect |
+| mstsc / Windows App connection | To do | Needs a Windows client machine |
+| Verification of the real screen picture, keyboard and mouse on real hardware | To do | Needs the host process to hold the Screen Recording and Accessibility permissions |
+| 1080p RemoteFX 30 fps | Met with the synthetic picture | See the table below; real capture awaits the permissions |
 
-合成画面（移动色条）实测，release 构建，sdl-freerdp 回环连接 15 秒，2026-09-24：
+Measured with the synthetic picture (moving colour bars), release build, sdl-freerdp connected over
+loopback for 15 seconds, 2026-09-24:
 
-| 尺寸 | 提供给编码器的帧率 | rdpmacd CPU | RSS |
+| Size | Frame rate offered to the encoder | rdpmacd CPU | RSS |
 |---|---|---|---|
-| 1920x1080 | 27 fps | 约 48% 一核 | 61 MB |
-| 3840x2160 | 24.5 fps | 约 50% 一核 | 166 MB |
-| 7680x4320 | 30 fps | 约 125% | 541 MB |
+| 1920x1080 | 27 fps | about 48% of one core | 61 MB |
+| 3840x2160 | 24.5 fps | about 50% of one core | 166 MB |
+| 7680x4320 | 30 fps | about 125% | 541 MB |
 
-CPU 包含合成画面本身的生成开销；三种尺寸下客户端都收到 RemoteFX surface bits，无丢帧或极少丢帧。
+The CPU figures include generating the synthetic picture itself. At all three sizes the client
+received RemoteFX surface bits, with no dropped frames or very few.
 
-## M2 Retina 与体验
+## M2 Retina and user experience
 
-| 项 | 状态 |
+| Item | Status |
 |---|---|
-| 分辨率跟随客户端（ADR D8 第 1 步） | 完成，合成画面验证；真实屏幕的缩放采集待权限 |
-| 显示器被替换时重新选择显示器 | 完成，每次重开按显示器策略重新选择；待实机验证 |
-| 显示器配置变化重建采集 | 已实现，每秒核对尺寸，变化时重开并发 Resize；待实机验证 |
-| libscreenio 脏矩形与 `Reset` | `Reset` 已有，采集流被系统停止时返回；脏矩形暂缓，H.264 本来就整帧编码，RemoteFX 由 IronRDP 在服务端做差分 |
-| VideoToolbox H.264 → AVC420 | 完成，合成画面验证；不超过 4096x2304 的会话用 H.264，更大的用 RemoteFX |
-| 帧确认背压与码率自适应 | 完成：客户端积压超过 3 帧时跳帧，每秒按跳帧比例调整 H.264 码率，平稳 3 秒后回升；往返时延探测未接入 |
-| 剪贴板文本 | 完成，双向纯文本，同步逻辑有单元测试；待用另一台机器上的客户端实测 |
-| 相对鼠标 | 已接线，待实机验证 |
-| 权限归属与稳定签名（开发用） | 完成：`scripts/sign-dev.sh` 用自签名证书签名，`scripts/agent.sh` 以 LaunchAgent 安装；TCC 日志确认负责进程是 `rdpmacd` 自己，release 与 debug 构建的指定要求相同 |
+| Resolution follows the client (ADR-0001 D8 step 1) | Done, verified with the synthetic picture; scaled capture of the real screen awaits the permissions |
+| Choosing the display again when it is replaced | Done: every reopen chooses again through the monitor policy; to be verified on real hardware |
+| Rebuilding capture when the display configuration changes | Implemented: the size is checked every second, and a change reopens capture and sends a Resize; to be verified on real hardware |
+| libscreenio dirty rectangles and `Reset` | `Reset` exists and is returned when the system stops the capture stream; dirty rectangles are deferred, since H.264 encodes whole frames anyway and IronRDP diffs RemoteFX frames on the server |
+| VideoToolbox H.264 → AVC420 | Done, verified with the synthetic picture; sessions up to 4096x2304 use H.264, larger ones RemoteFX |
+| Frame acknowledgement backpressure and bitrate adaptation | Done: frames are skipped when the client's backlog exceeds 3 frames, the H.264 bitrate is adjusted every second by the share of skipped frames and rises again after 3 steady seconds; round-trip time probing is not wired in |
+| Clipboard text | Done: plain text both ways, with unit tests for the sync logic; to be tested with a client on another machine |
+| Relative mouse | Wired up; to be verified on real hardware |
+| Permission ownership and stable signing (for development) | Done: `scripts/sign-dev.sh` signs with a self-signed certificate, and `scripts/agent.sh` installs `rdpmacd` as a LaunchAgent; the TCC log confirms that the responsible process is `rdpmacd` itself, and release and debug builds have the same designated requirement |
 
-## 后续里程碑中的分辨率工作
+## Resolution work in later milestones
 
-| 里程碑 | 项 |
+| Milestone | Item |
 |---|---|
-| M3 | rdpmac 自建虚拟显示器，按客户端请求的像素尺寸创建，免费版（ADR D8 第 2 步）；已完成，见下文 |
-| M4 | 接了显示器的 Mac 切换真实模式，默认关闭（ADR D8 第 3 步） |
-| M5 | 按 mstsc 多显示器创建多块虚拟显示器，Pro |
+| M3 | rdpmac's own virtual display, created at the pixel size the client asks for (ADR-0001 D8 step 2); done, see below |
+| M4 | Switching the real display mode on a Mac with a screen attached, off by default (ADR-0001 D8 step 3) |
+| M5 | Several virtual displays for mstsc's multi-monitor sessions (planned for a Pro edition until ADR-0002) |
 
-分辨率跟随客户端的验证，2026-09-24，合成画面，sdl-freerdp 回环：
+Resolution following the client, verified on 2026-09-24 with the synthetic picture and sdl-freerdp
+over loopback:
 
-| 场景 | 客户端请求 | 服务端提供 |
+| Scenario | Client asks for | Server provides |
 |---|---|---|
-| 默认模式，固定尺寸 | `/size:1280x720` | 1280x720 |
-| `--resolution native` | `/size:1280x720` | 1920x1080，即画面自身尺寸 |
-| 动态分辨率 | `/size:2400x1300 /dynamic-resolution`，窗口被系统限高 | 先 2400x1300，收到布局消息后改为 2400x961，客户端完成重新激活并继续解码 |
+| Default mode, fixed size | `/size:1280x720` | 1280x720 |
+| `--resolution native` | `/size:1280x720` | 1920x1080, the picture's own size |
+| Dynamic resolution | `/size:2400x1300 /dynamic-resolution`, window height limited by the system | 2400x1300 at first, 2400x961 after the layout message; the client completes the reactivation and keeps decoding |
 
-H.264 与 RemoteFX 对比，2026-09-24，release 构建，合成画面 30 fps 目标，sdl-freerdp 回环，客户端解码无错误：
+H.264 against RemoteFX, 2026-09-24, release build, synthetic picture with a 30 fps target,
+sdl-freerdp over loopback, no decoding errors on the client:
 
-| 尺寸 | 编码 | 实际帧率 | rdpmacd CPU | 码率 |
+| Size | Codec | Actual frame rate | rdpmacd CPU | Bitrate |
 |---|---|---|---|---|
-| 1920x1080 | RemoteFX | 27 fps | 约 48% 一核 | 不适用 |
-| 1920x1080 | H.264 | 28 fps | 约 16% 一核 | 约 0.25 Mbit/s |
-| 3840x2160 | RemoteFX | 24.5 fps | 约 50% 一核 | 不适用 |
-| 3840x2160 | H.264 | 25 fps | 约 21% 一核 | 约 0.4 Mbit/s |
-| 7680x4320 | H.264，未限制尺寸时 | 7 fps | 约 17% 一核 | 约 1.8 Mbit/s |
-| 7680x4320 | RemoteFX，限制尺寸后 | 30 fps | 约 125% | 不适用 |
+| 1920x1080 | RemoteFX | 27 fps | about 48% of one core | n/a |
+| 1920x1080 | H.264 | 28 fps | about 16% of one core | about 0.25 Mbit/s |
+| 3840x2160 | RemoteFX | 24.5 fps | about 50% of one core | n/a |
+| 3840x2160 | H.264 | 25 fps | about 21% of one core | about 0.4 Mbit/s |
+| 7680x4320 | H.264, before the size limit | 7 fps | about 17% of one core | about 1.8 Mbit/s |
+| 7680x4320 | RemoteFX, with the size limit | 30 fps | about 125% | n/a |
 
-合成画面大部分静止，真实桌面的码率会明显更高。8K 下 H.264 受硬件编码器吞吐限制，且 mstsc 使用的解码器上限是
-4096x2304，所以更大的会话固定走 RemoteFX。
+The synthetic picture is mostly still; the bitrate for a real desktop will be markedly higher. At
+8K, H.264 is limited by the hardware encoder's throughput, and the decoder mstsc uses is limited to
+4096x2304, so larger sessions always use RemoteFX.
 
-剪贴板在本机回环时不宜实测：客户端和服务端共用同一个系统粘贴板，客户端声明的延迟数据会覆盖本机剪贴板内容。
-本机联调时请给 sdl-freerdp 加 `-clipboard`，剪贴板请用另一台机器上的 mstsc 验证。
+The clipboard should not be tested over loopback on one machine: client and server share one system
+pasteboard, and the delayed data the client announces overwrites the local clipboard contents. When
+testing on one machine, give sdl-freerdp `-clipboard`, and verify the clipboard with mstsc on
+another machine.
 
-M2 还需要你来完成的验证：
+Still to verify for M2:
 
-| 项 | 需要的条件 |
+| Item | What it needs |
 |---|---|
-| 真实屏幕画面、缩放采集、光标缩放 | 按 README 以 LaunchAgent 安装 `rdpmacd`，授予"屏幕录制" |
-| 键鼠注入、相对鼠标、锁定键 | 同上，授予"辅助功能"；启动时 TCC 还预检了"输入监控"，锁定键不同步时先查这一项 |
-| mstsc 与 Windows App 连接、H.264 解码、动态分辨率 | 一台 Windows 客户机 |
-| 剪贴板双向文本 | 另一台机器上的客户端 |
+| Real screen picture, scaled capture, cursor scaling | Install `rdpmacd` as a LaunchAgent as the README describes, and grant Screen Recording |
+| Keyboard and mouse injection, relative mouse, lock keys | As above, and grant Accessibility; TCC also preflighted Input Monitoring at startup, so if the lock keys do not sync, check that permission first |
+| mstsc and Windows App connections, H.264 decoding, dynamic resolution | A Windows client machine |
+| Clipboard text both ways | A client on another machine |
 
-## M3 产品外壳
+## M3 Product shell
 
-| 项 | 状态 |
+| Item | Status |
 |---|---|
-| 自建虚拟显示器（D8 第 2 步） | 完成：libscreenio `VirtualDisplay` 基于 CGVirtualDisplay，运行时检测；没接显示器时会话得到客户端尺寸的显示器，替代占位显示器，1x、不缩放；会话结束 30 秒后移除；接了显示器或尺寸被拒时退回缩放 |
-| Swift 菜单栏 App | 完成：状态、当前连接、权限、设置、证书导入、指纹、重启、日志、诊断包、欢迎窗口；界面操作待你实测 |
-| 服务安装与卸载 | 完成：有 Team ID 时用 SMAppService，没有时用经典 LaunchAgent；命令行 `--enable-server` 等已验证 |
-| 权限引导 | 完成：守护进程自己请求权限，再打开系统设置对应页；TCC 日志确认负责进程是 App 里的 `rdpmacd` |
-| 证书导入 | 完成：X.509 v3 PEM，校验后替换并保留旧的一对，重启后握手用的就是新证书 |
-| 设置界面与设置文件 | 完成：`config.toml` 加命令行优先；控制套接字 `status`、`get_config`、`set_config`、`import_certificate`、`restart`、`request_permissions` |
-| 签名与公证 | 签名完成（开发身份，自内向外，指定要求稳定）；Developer ID 签名与 `notarize.sh` 已写好，未验证：需要 Apple 开发者账号 |
-| pkg 安装器 | 完成：装到"应用程序"、不可重定位、安装后重启已在运行的服务并打开 App；未在本机实际安装（需要管理员密码） |
-| 崩溃与日志收集 | 完成：守护进程按天写日志保留 14 天，panic 写进日志；诊断包含状态、日志、崩溃报告、设置、系统版本 |
-| libscreenio | 完成：`open_privacy_settings`；cbindgen 生成头文件，C ABI 冻结为 1.0 |
+| rdpmac's own virtual display (D8 step 2) | Done: libscreenio `VirtualDisplay`, built on CGVirtualDisplay and detected at run time; with no screen attached, a session gets a display at the client's size that replaces the placeholder display, at 1x and unscaled; it is removed 30 seconds after the session ends; with a screen attached, or when the size is refused, the session falls back to scaling |
+| Swift menu-bar app | Done: status, current connection, permissions, settings, certificate import, thumbprint, restart, logs, diagnostics bundle, welcome window; the interface is still to be tested hands-on |
+| Installing and uninstalling the service | Done: SMAppService when there is a Team ID, a classic LaunchAgent when there is none; `--enable-server` and the other command-line options are verified |
+| Permission guidance | Done: the daemon requests the permissions itself, then opens the matching pane of System Settings; the TCC log confirms that the responsible process is the `rdpmacd` inside the app |
+| Certificate import | Done: X.509 v3 PEM; checked, then swapped in with the old pair kept; after a restart the handshake uses the new certificate |
+| Settings UI and settings file | Done: `config.toml`, with the command line taking precedence; control socket with `status`, `get_config`, `set_config`, `import_certificate`, `restart`, `request_permissions` |
+| Signing and notarization | Signing done (development identity, inside out, stable designated requirement); Developer ID signing and `notarize.sh` are written but not verified: they need an Apple Developer account |
+| pkg installer | Done: installs into the Applications folder, is not relocatable, and after installing restarts a server that is already running and opens the app; not actually installed on the development Mac (needs an administrator password) |
+| Crash and log collection | Done: the daemon writes a log file per day and keeps 14 days, and panics go to the log; the diagnostics bundle holds the status, logs, crash reports, settings and system version |
+| libscreenio | Done: `open_privacy_settings`; cbindgen generates the header; the C ABI is frozen at 1.0 |
 
-虚拟显示器实测，2026-09-24，macOS 26.6.2，没接显示器的 Apple M4 Mac：
+Virtual display measurements, 2026-09-24, macOS 26.6.2, an Apple M4 Mac with no screen attached:
 
-| 项 | 结果 |
+| Item | Result |
 |---|---|
-| 创建并替代占位显示器 | 约 0.3 秒 |
-| 改尺寸，显示器编号不变 | 30 到 290 毫秒 |
-| 可用尺寸 | 最大测到 3600x2250 与 5120x2880；3840x2160 第一次被系统定成 1920x1080，辅助进程切换一次后直接可用（见下文"M3 之后"） |
-| 1600x900 会话经虚拟显示器采集 | 不缩放，H.264 约 30 到 36 fps，2 到 4.6 Mbit/s，无丢帧 |
-| 会话结束 30 秒后 | 虚拟显示器移除，占位显示器以新编号回来 |
+| Creating it, replacing the placeholder display | About 0.3 seconds |
+| Resizing, with the display number unchanged | 30 to 290 milliseconds |
+| Available sizes | Tested up to 3600x2250 and 5120x2880; the first time, the system set 3840x2160 to 1920x1080, and after one switch by the helper process it is available directly (see "After M3" below) |
+| 1600x900 session captured through the virtual display | Unscaled; H.264 at about 30 to 36 fps, 2 to 4.6 Mbit/s, no dropped frames |
+| 30 seconds after the session ends | The virtual display is removed; the placeholder display comes back with a new number |
 
-实测中确认的系统行为，决定了实现方式：
+System behaviour confirmed in these tests, which shaped the implementation:
 
-- 持有虚拟显示器的进程显式切换它的模式后，窗口服务器会忽略之后对它的设置，释放后它也不下线，直到这个进程退出；
-  换一个进程切换就没有这些问题。所以只用一个 1x 模式、靠系统自动切换，必须切换时交给辅助进程。
-- 进程读过任何显示器的模式后，就读不到之后出现的显示器的模式，所以用显示器边界判断是否就绪。
-- SMAppService 不会启动没有 Team ID 的 App 注册的辅助程序，所以这类构建改用经典 LaunchAgent。
-- 客户端和服务端在同一台 Mac 上时，虚拟显示器替代占位显示器会让 SDL 客户端退出；换另一台机器连就没有这个问题。
+- Once the process that holds a virtual display explicitly switches its mode, the window server
+  ignores later settings for it, and it stays online after release until that process exits; a
+  switch made by another process has none of these problems. So only one 1x mode is used and the
+  system switches to it by itself; when a switch is unavoidable, it is left to a helper process.
+- Once a process has read the mode of any display, it cannot read the modes of displays that appear
+  later, so readiness is judged by the display bounds.
+- SMAppService does not launch helpers registered by an app without a Team ID, so such builds use a
+  classic LaunchAgent instead.
+- With client and server on the same Mac, the virtual display replacing the placeholder display
+  makes the SDL client quit; connecting from another machine does not have this problem.
 
-M3 还需要你来完成的：
+Still to do for M3:
 
-| 项 | 需要的条件 |
+| Item | What it needs |
 |---|---|
-| 在菜单栏 App 里走一遍欢迎窗口、设置、证书导入 | 先 `sh scripts/agent.sh uninstall`，再装 `build/rdpmac-VERSION.pkg`，给 App 里的 `rdpmacd` 授权 |
-| 全新 Mac 从安装到首次连接不用终端 | 一台干净的 Mac，以及公证过的安装器 |
-| Developer ID 签名与公证 | Apple 开发者账号：Developer ID Application 与 Installer 证书，`notarytool` 凭据 |
-| 虚拟显示器的 HiDPI 模式 | 暂缓：需要找到不触发上面第一条问题的切换方式 |
+| Going through the welcome window, settings and certificate import in the menu-bar app | First `sh scripts/agent.sh uninstall`, then install `build/rdpmac-VERSION.pkg` and grant the permissions to the `rdpmacd` inside the app |
+| A new Mac from installation to first connection without a terminal | A clean Mac, and a notarized installer |
+| Developer ID signing and notarization | An Apple Developer account: Developer ID Application and Installer certificates, `notarytool` credentials |
+| HiDPI modes for the virtual display | Deferred: needs a way to switch that does not trigger the first problem above |
 
 
-## M3 之后：实机反馈的修正（2026-09-24）
+## After M3: fixes from hands-on testing (2026-09-24)
 
-| 反馈 | 原因 | 修正 |
+| Report | Cause | Fix |
 |---|---|---|
-| 画面模糊，像压缩过度的 JPEG | VideoToolbox 把 BGRA 转成有限范围 YUV，客户端按规范当全范围解码，对比度偏低；帧时间戳固定按 30 fps 递增，静止一段后的那一帧只分到 1/30 秒的码率；VideoToolbox 自己的码率控制在大面积变化后数秒内都不降低量化参数，中途改量化参数上限也不生效 | vImage 转全范围 BT.709；时间戳用真实时间；VideoToolbox 低延迟模式、每帧给基础量化参数，码率控制自己做（漏桶），画面停下 0.2 秒后补清到 QP 16；码率从每像素 0.1 比特提到 0.2；硬件不支持逐帧量化参数时退回 VideoToolbox 码率控制，静止时以 4 倍码率重编 |
-| 1920x1200 连上即断开，错误 0x1108 | SPS 没有 VUI 的 bitstream restriction，解码器要按 5.0 级的上限准备 12 帧缓冲；1920x1080 属于 4.0 级，只要 4 帧 | 改写 SPS 的 VUI：全范围 BT.709、不重排、缓冲等于参考帧数；低延迟模式默认声明 12 个参考帧，限定为 2 个（限定为 1 个时它只出关键帧） |
-| 光标上下颠倒 | IronRDP 把指针数据原样作为 32 位 XOR 掩码，RDP 规定它是自下而上的 BGRA | 发送前行序颠倒、交换 R 与 B，热点仍以左上角为准 |
-| 全屏或设为 3840x2160 时 Mac 端只有 1920x1080，有时列表里有 4K 要手工切换 | macOS 对没学过的显示器把 3840x2160 定成它自己加的 1920x1080；新建时被拒，rdpmac 删掉显示器退回占位显示器，列表里就只剩 1080p；手工切换一次后 macOS 按显示器身份（厂商、产品、序列号）记住，以后直接是 4K | 被拒时 rdpmacd 以辅助进程（`rdpmacd --switch-display-mode`）用公开的 CoreGraphics 接口切过去，等同手工切换；在守护进程里切会占住显示器，使它不再响应改尺寸、释放后也不下线 |
-| 授权后点击仍无效，日志里没有线索 | macOS 对运行中的进程不生效新授权，屏幕录制的检查在进程内也一直返回启动时的结果；缺辅助功能权限时事件被静默丢弃 | 状态加 `restart_needed`，App 在权限项下提示并给出重启按钮；每个连接接入时如缺辅助功能权限，日志写明原因和做法；注入失败的警告带上是哪个事件 |
-| 锁屏后 RDP 连上一片黑，光标能动，点击无效 | 锁屏后显示器很快休眠，这时释放的虚拟显示器 macOS 不会拿掉，要等到有用户活动；rdpmac 连接时不声明用户活动，没有活动显示器时取到这块残留的显示器，当成真实屏幕，不再新建虚拟显示器，采集它又失败（`invalid argument`） | 会话开始时声明用户活动（`IOPMAssertionDeclareUserActivity`，与 `caffeinate -u` 相同）并等显示器醒来；记住自己释放过的虚拟显示器，等 macOS 拿掉后再决定用哪块 |
-| 锁屏界面能输入口令，却总被判错；RustDesk 能解锁 | loginwindow 只在用户变为活动时启动解锁流程（日志里的 `startUnlock`），约 30 秒后超时；注入的键鼠事件不启动它，没启动时任何口令都不校验就判错：失败的几次系统没有口令校验记录，成功的有；RustDesk 每个连接都先运行 `caffeinate -u` | 会话开始时和收到远程输入时（最多每 2 秒一次）声明用户活动；隔了 20 秒以上的第一次输入先等 200 毫秒，让解锁流程先启动 |
-| 菜单栏图标有时消失 | App 崩溃了（一天三次，崩溃报告相同）：设置和欢迎窗口里的 SwiftUI 内容默认在 AppKit 更新约束的过程中改写窗口的最小和最大尺寸，内容随每两秒一次的状态刷新变化时，AppKit 判定约束更新陷入循环，抛出异常结束进程；窗口关闭后也不释放，内容仍在后台跟着刷新 | 窗口改为在内容的首选尺寸变化之后再调整大小，关闭即释放；菜单栏换成设计稿的模板图标，五种状态同一尺寸 |
+| The picture is blurry, like an over-compressed JPEG | VideoToolbox turns BGRA into limited-range YUV, which the client, as the specification prescribes, decodes as full range, so contrast was low; frame timestamps advanced at a fixed 30 fps, so the frame after a still spell got only 1/30 of a second's worth of bitrate; VideoToolbox's own rate control does not lower the quantiser for several seconds after large changes, and a new maximum quantiser set mid-stream has no effect | vImage converts to full-range BT.709; timestamps use real time; VideoToolbox runs in low-latency mode with a base quantiser given for every frame, and rdpmac does its own rate control (a leaky bucket); 0.2 seconds after the picture stops, it is refined to QP 16; the bitrate goes from 0.1 to 0.2 bits per pixel; where the hardware does not support a per-frame quantiser, rdpmac falls back to VideoToolbox's rate control and re-encodes a still picture at 4 times the bitrate |
+| 1920x1200 disconnects right after connecting, error 0x1108 | The SPS had no bitstream restriction in its VUI, so the decoder had to prepare a 12-frame buffer, the maximum for level 5.0; 1920x1080 is level 4.0 and needs only 4 frames | The SPS VUI is rewritten: full-range BT.709, no reordering, a buffer equal to the number of reference frames; low-latency mode declares 12 reference frames by default, and they are limited to 2 (limited to 1, it produces only key frames) |
+| The cursor is upside down | IronRDP passes the pointer data unchanged as the 32-bit XOR mask, which RDP defines as bottom-up BGRA | Before sending, the row order is reversed and R and B are swapped; the hotspot stays relative to the top-left corner |
+| In full screen or at 3840x2160 the Mac has only 1920x1080; sometimes 4K is in the list but has to be switched to by hand | For a display it has not learned, macOS turns 3840x2160 into a 1920x1080 mode it adds itself; when the new display was refused, rdpmac removed it and fell back to the placeholder display, so the list held only 1080p; after one switch by hand, macOS remembers the choice by display identity (vendor, product, serial number), and from then on the display gets 4K directly | When the size is refused, rdpmacd switches from a helper process (`rdpmacd --switch-display-mode`) through the public CoreGraphics calls, the same as switching by hand; switching in the daemon would hold on to the display, which then no longer responds to resizes and stays online after release |
+| Clicks still have no effect after granting the permissions, and the log gives no clue | macOS does not apply a new grant to a running process, and the Screen Recording check inside the process keeps returning its result from launch; without the Accessibility permission, events are dropped silently | The status gains `restart_needed`, and the app says so under the permission items and offers a restart button; when a connection comes in without the Accessibility permission, the log states the reason and what to do; the warning for a failed injection names the event |
+| After the Mac locks, an RDP connection shows only black; the cursor moves, but clicks have no effect | After a lock the display soon sleeps, and macOS does not remove a virtual display released meanwhile until there is user activity; rdpmac did not declare user activity when connecting, so with no active display it took that leftover display, treated it as a real screen and created no virtual display, and then failed to capture it (`invalid argument`) | A session start declares user activity (`IOPMAssertionDeclareUserActivity`, the same as `caffeinate -u`) and waits for a display to wake; rdpmac remembers the virtual displays it released, and waits for macOS to remove them before deciding which display to use |
+| A password can be typed on the lock screen but is always rejected; RustDesk can unlock | loginwindow starts the unlock flow (`startUnlock` in the log) only when a user becomes active, and the flow times out after about 30 seconds; injected keyboard and mouse events do not start it, and while it has not started every password is rejected unchecked: the system logged no password check for the failed attempts, and did for the successful ones; RustDesk runs `caffeinate -u` first for every connection | User activity is declared when a session starts and when remote input arrives (at most once every 2 seconds); the first input after a gap of more than 20 seconds waits 200 milliseconds so that the unlock flow starts first |
+| The menu-bar icon sometimes disappears | The app crashed (three times in a day, with the same crash report): by default the SwiftUI content of the settings and welcome windows rewrites the window's minimum and maximum size while AppKit updates constraints; when the content changed with the status refresh every two seconds, AppKit judged the constraint update to be stuck in a loop and threw an exception that ended the process; closed windows were not released either, and their content kept refreshing in the background | Windows now resize after their content's preferred size has changed, and are released when closed; the menu bar uses the template icon from the design mock-ups, with the same size for all five states |
 
-锁屏实测（2026-09-24，Mac 锁屏中）：测试实例建好虚拟显示器并在会话结束 30 秒后释放它，释放后它仍在线、处于休眠，
-活动显示器为 0，与黑屏时的现场一致。下一次会话开始时，loginwindow 记录到解锁请求（reason 9）和 `startUnlock`，残留的
-显示器 100 毫秒内消失，新的虚拟显示器按客户端尺寸建好。你装上 0.3.0 后实测通过：锁屏后用 mstsc 连入，会话开始
-16 毫秒后 loginwindow 启动解锁流程，第一次输入口令即解锁；之后几次重连都按客户端尺寸新建了虚拟显示器。
+Lock screen test (2026-09-24, with the Mac locked): a test instance created a virtual display and
+released it 30 seconds after the session ended; after release it was still online and asleep, with 0
+active displays, matching the state found when the picture was black. When the next session started,
+loginwindow logged an unlock request (reason 9) and `startUnlock`, the leftover display disappeared
+within 100 milliseconds, and a new virtual display was created at the client's size. Verified on
+0.3.0: when mstsc connected to the locked Mac, loginwindow started the unlock flow 16 milliseconds
+after the session started, and the first password typed unlocked it; each of the reconnections after
+that created a new virtual display at the client's size.
 
-画质实测：1920x1200 的文字桌面截图，按会话的节奏编码，以客户端最后停下的画面对原图算亮度 PSNR。左列是只改了颜色与
-时间戳、仍由 VideoToolbox 控制码率时的结果，修改前的实际观感比它更差（对比度偏低、静止帧码率不足）。
+Picture quality measurements: a screenshot of a desktop full of text at 1920x1200, encoded at the
+session's pace, with luma PSNR computed between the picture the client finally settles on and the
+original. The left column is the result with only the colour and timestamp changes, rate control
+still by VideoToolbox; before the changes the picture looked worse than that (low contrast, too
+little bitrate for still frames).
 
-| 场景 | VideoToolbox 码率控制 | 逐帧量化参数与静止补清 | 补清花费 |
+| Scenario | VideoToolbox rate control | Per-frame quantiser and still refinement | Refinement cost |
 |---|---|---|---|
-| 连上时桌面静止 | 39.4 dB | 42.6 dB，0.2 秒后 49.1 dB | 1 帧，182 KB |
-| 滚动 1 秒后停下 | 47.3 dB | 42.6 dB，0.2 秒后 49.1 dB | 1 帧，200 KB |
-| 整屏来回切换 1/3 秒后停下 | 23.9 dB，不再回升 | 停下后 0.7 秒内到 49.2 dB | 3 帧，595 KB |
+| Desktop still when connecting | 39.4 dB | 42.6 dB, 49.1 dB after 0.2 seconds | 1 frame, 182 KB |
+| Scrolling for 1 second, then stopping | 47.3 dB | 42.6 dB, 49.1 dB after 0.2 seconds | 1 frame, 200 KB |
+| Full-screen switching back and forth for 1/3 second, then stopping | 23.9 dB, does not rise again | 49.2 dB within 0.7 seconds of stopping | 3 frames, 595 KB |
 
-放大 4 倍对比，QP 14 到 20 的补清结果与原图肉眼难分，只有 4:2:0 固有的彩色字边；49 dB 对应 QP 16。持续大面积变化超出
-码率时，量化参数最高到 44，再超就暂缓发送新帧，停下后先补发最新画面再补清。FreeRDP 回环实测 1366x768、1920x1080、
-1920x1200、2560x1600 均正常解码，静止时补清帧按预期发出。
+Compared at 4x magnification, refinements at QP 14 to 20 are hard to tell from the original by eye;
+only the colour fringes on text inherent to 4:2:0 remain. 49 dB corresponds to QP 16. When sustained
+large changes exceed the bitrate, the quantiser goes up to 44; beyond that, new frames are held
+back, and once the picture stops, the latest picture is sent first and then refined. Over FreeRDP
+loopback, 1366x768, 1920x1080, 1920x1200 and 2560x1600 all decoded correctly, and refinement frames
+went out as expected while the picture was still.
 
-需要你验证：用 mstsc 以 1920x1200 连接是否还报 0x1108，以及静止时文字是否清晰。
+To be verified: whether mstsc connecting at 1920x1200 still reports 0x1108, and whether text is
+sharp while the picture is still.
 
-4K 的实测（2026-09-24）：新的显示器身份请求 3840x2160 时，两次设置都停在 1920x1080（约 3.3 秒），辅助进程切换后
-成功，总计约 3.6 秒；之后同一身份的显示器直接得到 4K（约 0.3 秒），改到 2560x1600、1920x1080 再回 4K 都正常。
-rdpmacd 回环实测：未学过的身份以 4K 连入，日志记录辅助进程切换后按 4K 建好显示器，再以 2560x1600 连入时原地改尺寸。
+4K measurements (2026-09-24): when a new display identity asks for 3840x2160, both attempts to set
+it end at 1920x1080 (about 3.3 seconds); the switch by the helper process then succeeds, about
+3.6 seconds in total. After that a display with the same identity gets 4K directly (about
+0.3 seconds), and resizing to 2560x1600, to 1920x1080 and back to 4K all work. rdpmacd over
+loopback: when a client connects at 4K with an identity not learned yet, the log records the switch
+by the helper process and then the display created at 4K; when it connects again at 2560x1600, the
+display is resized in place.
 
-## M4 企业能力（计划，2026-09-24）
+## M4 Enterprise features (plan, 2026-09-24)
 
-范围来自 ADR 第 4 节，验收是域账号与独立账号都能走 NLA、企业安全问卷可回答。按风险与依赖排序，先做会改动 IronRDP
-的 NLA：
+The scope comes from section 4 of ADR-0001, and acceptance means that domain accounts and local
+accounts can both use NLA and that enterprise security questionnaires can be answered. The items are
+ordered by risk and dependencies, starting with NLA, which changes IronRDP:
 
-| 顺序 | 项 | IronRDP 0.13 现状 | 要做的 |
+| Order | Item | IronRDP 0.13 today | What to do |
 |---|---|---|---|
-| 1 | NLA：凭据库（独立 Mac）与 Kerberos（加入域的 Mac） | 有 `RdpServerSecurity::Hybrid` 与 CredSSP 服务端；NTLM 只认一个预先给定的账号与口令，Kerberos 可传 `KerberosServerConfig`；认证后客户端委派口令 | 给 acceptor 加可插拔的凭据查找，按 ADR 第 6 节用 `[patch.crates-io]` 指向本地 IronRDP 检出，之后提交上游；凭据库在登记时经 PAM 校验、把每用户的 NT 哈希存进钥匙串；Kerberos 用 keytab 里的服务密钥；委派来的口令再经 PAM 校验 |
-| 2 | AVC444 | 图形管线有 AVC444 能力位 | 拆成亮度与色度两路 4:2:0，VideoToolbox 编两路，去掉彩色文字的色边 |
-| 3 | 声音 | 有 `with_sound_factory` 与 RDPSND 服务端 | libscreenio 加系统声音采集（ScreenCaptureKit 音频），协商 PCM 或 AAC |
-| 4 | 剪贴板图片与文件 | cliprdr 有 FileContents 请求与响应 | 图片双向、文件双向（2026-09-26 完成，见 docs/clipboard.md） |
-| 5 | 物理显示器切换模式（D8 第 3 步，默认关闭） | 不涉及 | 用 libscreenio 的 `switch_display_mode` 经辅助进程切换，会话结束恢复原模式 |
-| 6 | MDM 托管配置 | 不涉及 | 读取配置描述文件下发的托管偏好，优先于 config.toml，文档列出全部键 |
-| 7 | 审计与会话录制接口 | 不涉及 | 结构化审计记录（来源、账号、方式、结果、时长）；录制只定义接口 |
-| 8 | 登录窗口会话 | 不涉及 | 调研报告，不实现 |
-| 9 | RemoteFX progressive | graphics 有 progressive 相关代码，编码器是否完整待查 | 优先级最低，H.264 已覆盖现代客户端 |
+| 1 | NLA: credential store (standalone Macs) and Kerberos (Macs joined to a domain) | Has `RdpServerSecurity::Hybrid` and a CredSSP server; NTLM accepts only one account and password given in advance, and Kerberos can take a `KerberosServerConfig`; after authentication the client delegates its password | Add a pluggable credentials lookup to the acceptor, pointing `[patch.crates-io]` at a local IronRDP checkout as section 6 of ADR-0001 says, and submit it upstream later; the credential store checks the password through PAM at enrollment and keeps each user's NT hash in the keychain; Kerberos uses the service key from a keytab; the delegated password is checked through PAM again |
+| 2 | AVC444 | The graphics pipeline has the AVC444 capability bit | Split the picture into two 4:2:0 views, luma and chroma, encode both with VideoToolbox, and remove the colour fringes on coloured text |
+| 3 | Sound | Has `with_sound_factory` and an RDPSND server | libscreenio gains system sound capture (ScreenCaptureKit audio); negotiate PCM or AAC |
+| 4 | Clipboard pictures and files | cliprdr has FileContents requests and responses | Pictures both ways, files both ways (done on 2026-09-26, see docs/clipboard.md) |
+| 5 | Mode switching on physical displays (D8 step 3, off by default) | Not involved | Switch through a helper process with libscreenio's `switch_display_mode`, and restore the original mode when the session ends |
+| 6 | MDM managed configuration | Not involved | Read the managed preferences that configuration profiles deliver, taking precedence over config.toml; the documentation lists every key |
+| 7 | Audit and session recording interfaces | Not involved | Structured audit records (source, account, method, result, duration); for recording, only the interface is defined |
+| 8 | Login window sessions | Not involved | A research report, no implementation |
+| 9 | RemoteFX progressive | graphics has progressive-related code; whether the encoder is complete is still to be checked | Lowest priority; H.264 already covers modern clients |
 
-进度：
+Progress:
 
-- 2026-09-24 NLA 凭据库模式完成，设计、实现与测试见 `docs/nla.md`。IronRDP 补丁在 `~/works/IronRDP` 的 `rdpmac/nla`
-  分支上，还没提交上游；NT 哈希存在登录钥匙串，在 App 里登记；设置 `security = "nla"` 开启。本机回环（FreeRDP
-  sfreerdp）已测过正确口令、错误口令、未登记账号、只支持 TLS 的客户端和失败锁定；2026-09-25 你用 mstsc 实测通过。
-  Kerberos 要等有 AD 域再做。
-- 2026-09-25 升级后 NLA 失效：没有团队 ID 的签名下，每个构建都算另一个程序，读不到上一个构建写入的哈希。现在状态、
-  启动日志和 App 都会提示重新登记，重新登记直接覆盖旧条目，删除登记在删不掉时改写成标记。长期办法是 Developer ID
-  签名。见 `docs/nla.md`。
-- 2026-09-25 AVC444 完成，设计、测量与测试见 `docs/avc444.md`。用 AVC444v2，每帧两路视图一起发；VideoToolbox 只从上一帧
-  预测，靠长期参考帧让两路各自从上一路同类视图预测，打字时每路只有几 KB。彩色文字的 RGB PSNR 从 28.4 dB 升到 37.0 dB。
-  IronRDP 补丁加了 `send_avc444v2_frame`，并修正只含色度的帧的长度字段。设置 `codec = "avc420"` 可以关掉；
-  4K 下全屏持续变化时约 18 fps（AVC420 为 30 fps）。本机回环（FreeRDP）通过，你用 mstsc 实测没有问题。
-- 2026-09-25 AVC444 的颜色转换可以用多核（默认最多 6 个线程，每帧快 10% 到 15%）；在 App 里改编码或多核，不重启，
-  从下一次连接起生效，方便实际对比。
-- 2026-09-25 声音：libscreenio 经 ScreenCaptureKit 采集 Mac 播放的声音（C ABI 1.2），rdpmac 用 IronRDP 的 RDPSND
-  以 16 位立体声 PCM 48/44.1 kHz 发给客户端，`audio` 设置可关。回环（FreeRDP，测试音调）通过，真实采集待 mstsc 实测。
-  设计与测试见 `docs/audio.md`。
-- 2026-09-25 屏保时切换窗口后的花屏：客户端最小化时画面暂停，恢复或要求重画时发关键帧并重置码率（IronRDP 补丁加了
-  `request_refresh`）；`h264-dump` 可把发出的码流原样录下，供下次复现时判断问题在哪一端。见 `docs/refresh.md`。
-- 2026-09-26 录制证实花屏是 mstsc 把 AVC444 的两路视图配错了一帧（码流本身正确）。重画和恢复时重置图形状态、每路
-  视图前加访问单元分隔符；采集按 `fps` 真正限速（原来最高 60 fps）。声音：按规范填 `wTimeStamp`，按客户端确认记录
-  播放延迟，落后超过 400 ms 时跳过一段追回 150 ms；`mute-mac`（默认开）在客户端播放期间静音 Mac。见 `docs/refresh.md`
-  和 `docs/audio.md`。
+- 2026-09-24: NLA with the credential store is done; the design, implementation and tests are in
+  `docs/nla.md`. The IronRDP patches are in the IronRDP fork (branch `rdpmac/nla`) and not yet
+  submitted upstream; the NT hashes are kept in the login keychain, and accounts are enrolled in the
+  app; the setting `security = "nla"` turns NLA on. Loopback on the same Mac (FreeRDP sfreerdp) has
+  been tested with the right password, a wrong password, an account not enrolled, a client that
+  supports only TLS, and the lockout; verified with mstsc on 2026-09-25. Kerberos waits until there
+  is an AD domain.
+- 2026-09-25: NLA broke after an update. Under a signature without a Team ID, every build counts as
+  another program and cannot read the hash the previous build wrote. The status, the startup log and
+  the app now ask for enrollment again; enrolling again overwrites the old item, and removing an
+  enrollment whose item cannot be deleted overwrites it with a marker. The long-term fix is
+  Developer ID signing. See `docs/nla.md`.
+- 2026-09-25: AVC444 is done; the design, measurements and tests are in `docs/avc444.md`. It uses
+  AVC444v2, sending both views together in every frame. VideoToolbox predicts only from the previous
+  frame; long-term references let each view predict from the previous view of its own kind, so
+  typing costs only a few KB per view. RGB PSNR of coloured text rises from 28.4 dB to 37.0 dB. The
+  IronRDP patches add `send_avc444v2_frame` and correct the length field of frames that carry only
+  chroma. The setting `codec = "avc420"` turns it off; at 4K, sustained full-screen change runs at
+  about 18 fps (30 fps with AVC420). Loopback on the same Mac (FreeRDP) passes, and a test with
+  mstsc showed no problems.
+- 2026-09-25: AVC444 colour conversion can use several cores (at most 6 threads by default, 10% to
+  15% faster per frame); changing the codec or multi-core conversion in the app needs no restart and
+  applies from the next connection, so the options are easy to compare in practice.
+- 2026-09-25: Sound. libscreenio captures the sound the Mac plays through ScreenCaptureKit
+  (C ABI 1.2), and rdpmac sends it to the client with IronRDP's RDPSND as 16-bit stereo PCM at
+  48/44.1 kHz; the `audio` setting turns it off. Loopback (FreeRDP, test tone) passes; real capture
+  is still to be tested with mstsc. The design and tests are in `docs/audio.md`.
+- 2026-09-25: Corrupted picture after switching windows while the screen saver was on. While the
+  client is minimised the picture pauses; when it is restored or asks for a redraw, a key frame is
+  sent and the bitrate is reset (the IronRDP patches add `request_refresh`). `h264-dump` records the
+  bitstream exactly as sent, for telling which end is at fault when it happens again. See
+  `docs/refresh.md`.
+- 2026-09-26: A recording proved that the corrupted picture came from mstsc pairing AVC444's two
+  views one frame apart (the bitstream itself was correct). Redraws and restores now reset the
+  graphics state, and an access unit delimiter precedes each view; capture really keeps to `fps` (it
+  used to run at up to 60 fps). Sound: `wTimeStamp` is filled in as the specification says; a ledger
+  keeps what is sent at most 200 ms ahead of real time, blocks older than 200 ms are not sent, and
+  nothing is sent while the client asks for no output; `mute-mac` (on by default) mutes the Mac while
+  the client plays the sound. (Corrected on 2026-09-27: this note first described catching up on
+  the client's confirmations, which cannot work, since mstsc confirms a block as soon as it arrives.)
+  See `docs/refresh.md` and `docs/audio.md`.
+- 2026-09-26: Pictures and files on the clipboard, both ways: pictures as PNG, CF_DIB and CF_DIBV5,
+  files and folders through File Contents requests. See `docs/clipboard.md`.
