@@ -90,6 +90,8 @@ struct DaemonSettings: Codable, Equatable {
     var auth: String?
     var security: String?
     var pamService: String?
+    /// Set by hand in the file; not shown, only kept when saving.
+    var allowUsers: [String]?
     var codec: String?
     var parallelConversion: Bool?
     var clipboard: Bool?
@@ -109,6 +111,7 @@ struct DaemonSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case listen, auth, security, codec, clipboard, audio, resolution, fps, cert, key
         case pamService = "pam-service"
+        case allowUsers = "allow-users"
         case virtualDisplay = "virtual-display"
         case parallelConversion = "parallel-conversion"
         case cursorHz = "cursor-hz"

@@ -168,10 +168,11 @@ menu-bar app says so and offers a restart button.
 ### Settings file and control socket
 
 `~/Library/Application Support/rdpmac/config.toml` holds the settings, under the names of the
-command-line flags (`listen`, `auth`, `security`, `pam-service`, `codec`, `parallel-conversion`,
-`clipboard`, `audio`, `mute-mac`, `audio-rate`, `resolution`, `virtual-display`, `fps`, `cursor-hz`,
-`cert`, `key` and `h264-dump`). Values given on the command line win, and `--config` names another
-file. An unknown key or a value out of range stops the start, with the reason.
+command-line flags (`listen`, `auth`, `security`, `pam-service`, `allow-users`, `codec`,
+`parallel-conversion`, `clipboard`, `audio`, `mute-mac`, `audio-rate`, `resolution`,
+`virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given on the command
+line win, and `--config` names another file. An unknown key or a value out of range stops the
+start, with the reason.
 
 `control.sock` in the same directory is the control socket of the menu-bar app. Only the same user
 can connect, and each line is one JSON request: `status`, `request_permissions`, `get_config`,
@@ -200,8 +201,11 @@ the client is authenticated, the password it delegates is still checked with PAM
 the NTLM stage count towards the lockout too. With `--auth static`, NLA uses the static password and
 needs no enrollment. Details are in docs/nla.md.
 
-Which accounts can connect: with `tls`, any account that PAM accepts on the Mac gets the console
-session of the user rdpmacd runs as; with `nla`, only that user, once enrolled (SECURITY.md).
+Which accounts can log on: the session is always the console session of the user rdpmacd runs as,
+and by default only that user can log on. `allow-users = ["name", ...]` in the settings file, or
+`--allow-user NAME` once per account, lets other accounts of the Mac log on with `tls` and take
+that session over; NLA admits only enrolled accounts, and only the user rdpmacd runs as can enroll.
+Any other account is turned away before its password is checked (SECURITY.md).
 
 ### Logs
 

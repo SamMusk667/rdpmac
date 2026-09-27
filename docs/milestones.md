@@ -266,10 +266,10 @@ ADR-0002 made rdpmac fully open source under MIT OR Apache-2.0 and put this mile
 | Order | Item | State |
 |---|---|---|
 | 1 | MIT OR Apache-2.0; libscreenio in this repository with its history; documentation in English; CONTRIBUTING.md, SECURITY.md and CI | Done (2026-09-27) |
-| 2 | Publish the repository and the IronRDP fork with branch `rdpmac/nla`; CI passing on GitHub's macOS runners | To do |
+| 2 | Publish the repository and the IronRDP fork with branch `rdpmac/nla`; CI passing on GitHub's macOS runners | Done (2026-09-27): github.com/SamMusk667/rdpmac, whose first CI run passed |
 | 3 | Developer ID signing and notarization; the .pkg on GitHub Releases; automatic updates | To do; needs an Apple Developer account |
 | 4 | Propose the five IronRDP patches upstream | To do |
-| 5 | Who may connect: TLS logons limited to the user rdpmacd runs as, or to a list, as NLA already is | To do |
+| 5 | Who may connect: TLS logons limited to the user rdpmacd runs as, or to a list, as NLA already is | Done (2026-09-27): `allow-users`; other accounts are turned away before PAM |
 
 After M5, for people who use rdpmac every day, in this order:
 

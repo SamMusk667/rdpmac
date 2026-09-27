@@ -3,10 +3,12 @@
 //! IronRDP hands the credentials from the client's `ClientInfo` PDU, or with NLA the ones the
 //! client delegated, to a [`CredentialValidator`]; this crate provides the validators rdpmacd
 //! wires in: [`pam::PamValidator`] for local and directory accounts on macOS, [`StaticValidator`]
-//! for development, and [`Lockout`] which wraps any validator with per-user failure lockout. For
+//! for development, [`Allowed`] which lets only the accounts that may take the session over reach
+//! the password check, and [`Lockout`] which wraps any validator with per-user failure lockout. For
 //! NLA, [`nla::NlaLookup`] gives CredSSP the NT hashes of the accounts enrolled in
 //! [`keychain::KeychainStore`].
 
+pub mod allow;
 #[cfg(target_os = "macos")]
 pub mod keychain;
 pub mod lockout;
@@ -15,6 +17,7 @@ pub mod nla;
 pub mod pam;
 
 use async_trait::async_trait;
+pub use allow::Allowed;
 pub use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
 pub use lockout::Lockout;
 

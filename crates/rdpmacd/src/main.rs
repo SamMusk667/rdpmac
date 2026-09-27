@@ -99,7 +99,7 @@ fn validator(args: &Args) -> anyhow::Result<Arc<dyn CredentialValidator>> {
         AuthMode::Pam => {
             #[cfg(target_os = "macos")]
             {
-                Arc::new(Lockout::new(rdpmac_auth::pam::PamValidator::new(args.pam_service.clone())))
+                Arc::new(Lockout::new(pam(args)))
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -107,6 +107,24 @@ fn validator(args: &Args) -> anyhow::Result<Arc<dyn CredentialValidator>> {
             }
         }
     })
+}
+
+/// PAM behind the check that lets only the user rdpmacd runs as, and the accounts in allow-users,
+/// reach it: the session is that user's whoever logs on.
+#[cfg(target_os = "macos")]
+fn pam(args: &Args) -> rdpmac_auth::Allowed<rdpmac_auth::pam::PamValidator> {
+    for user in &args.allow_users {
+        if rdpmac_auth::allow::uid_of(user).is_none() {
+            warn!(user, "allow-users names an account this Mac does not know");
+        }
+    }
+    if args.allow_users.is_empty() {
+        info!("only the user rdpmacd runs as may log on");
+    } else {
+        info!(also = ?args.allow_users, "the user rdpmacd runs as and the accounts in allow-users may log on");
+    }
+    let pam = rdpmac_auth::pam::PamValidator::new(args.pam_service.clone());
+    rdpmac_auth::Allowed::new(pam, args.allow_users.clone())
 }
 
 type Lookup = Box<dyn CredentialsProxy<AuthenticationData = AuthIdentity> + Send>;
@@ -154,7 +172,7 @@ fn nla(args: &Args) -> anyhow::Result<(Arc<dyn CredentialValidator>, Lookup)> {
                     }
                     Err(e) => warn!(%e, "listing the accounts enrolled for NLA failed"),
                 }
-                let lockout = Arc::new(Lockout::new(rdpmac_auth::pam::PamValidator::new(args.pam_service.clone())));
+                let lockout = Arc::new(Lockout::new(pam(args)));
                 (lockout.clone(), Box::new(NlaLookup::new(Arc::new(store), lockout)))
             }
             #[cfg(not(target_os = "macos"))]

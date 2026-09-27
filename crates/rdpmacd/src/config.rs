@@ -127,6 +127,11 @@ pub struct Args {
     #[arg(long, default_value = "checkpw")]
     pub pam_service: String,
 
+    /// Another account that may log on, besides the user rdpmacd runs as, who always may. It takes
+    /// over that user's console session. Repeat the flag for more accounts.
+    #[arg(long = "allow-user", value_name = "NAME")]
+    pub allow_users: Vec<String>,
+
     /// Username accepted in static mode.
     #[arg(long, required_if_eq("auth", "static"))]
     pub user: Option<String>,

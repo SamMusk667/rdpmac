@@ -28,6 +28,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pam_service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_users: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<Codec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_conversion: Option<bool>,
@@ -82,6 +84,12 @@ impl Settings {
         if let Some(service) = &self.pam_service {
             ensure!(!service.trim().is_empty(), "pam-service must not be empty");
         }
+        if let Some(users) = &self.allow_users {
+            ensure!(
+                users.iter().all(|user| !user.trim().is_empty() && !user.chars().any(char::is_control)),
+                "allow-users must name accounts"
+            );
+        }
         ensure!(
             self.cert.is_some() == self.key.is_some(),
             "cert and key must be set together"
@@ -125,6 +133,9 @@ impl Settings {
         }
         if let (Some(v), true) = (&self.pam_service, unset("pam_service")) {
             args.pam_service = v.clone();
+        }
+        if let (Some(v), true) = (&self.allow_users, unset("allow_users")) {
+            args.allow_users = v.clone();
         }
         if let (Some(v), true) = (self.codec, unset("codec")) {
             args.codec = v;
@@ -187,6 +198,7 @@ impl Settings {
             auth: Some(args.auth),
             security: Some(args.security),
             pam_service: Some(args.pam_service.clone()),
+            allow_users: Some(args.allow_users.clone()),
             codec: Some(args.codec),
             parallel_conversion: Some(args.parallel_conversion),
             clipboard: Some(!args.no_clipboard),
@@ -261,6 +273,7 @@ mod tests {
         assert!(with(|s| s.audio = Some(false)), "the sound channel is offered from the start");
         assert!(with(|s| s.h264_dump = Some(true)), "recording is set up at start");
         assert!(with(|s| s.mute_mac = Some(false)), "the sound channel takes it at start");
+        assert!(with(|s| s.allow_users = Some(vec!["admin".into()])), "logons are checked from the start");
     }
 
     #[test]
@@ -283,6 +296,20 @@ mod tests {
         assert!(settings.validate().is_err(), "only 48000 and 44100");
         let settings: Settings = toml::from_str("cert = \"/tmp/c.pem\"").expect("parses");
         assert!(settings.validate().is_err(), "cert without key");
+    }
+
+    #[test]
+    fn listed_accounts_come_from_the_file_unless_the_command_line_names_some() {
+        let (mut args, matches) = parse(&[]);
+        assert!(args.allow_users.is_empty(), "only the user rdpmacd runs as by default");
+        let file: Settings = toml::from_str(r#"allow-users = ["admin"]"#).expect("parses");
+        file.apply(&mut args, &matches);
+        assert_eq!(args.allow_users, ["admin"]);
+        let (mut args, matches) = parse(&["--allow-user", "ops", "--allow-user", "it"]);
+        file.apply(&mut args, &matches);
+        assert_eq!(args.allow_users, ["ops", "it"], "the flags win");
+        let blank: Settings = toml::from_str(r#"allow-users = [" "]"#).expect("parses");
+        assert!(blank.validate().is_err());
     }
 
     #[test]
