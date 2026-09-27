@@ -7,7 +7,7 @@ macOS versions, the client, and the steps that show the problem.
 Keep rdpmac on networks you trust. Like any RDP server, it should not be reachable from the internet
 directly; reach it through a VPN or an RD Gateway.
 
-How rdpmac authenticates, as of 0.3.x:
+How rdpmac authenticates, as of 0.4.x:
 
 - With `security = "tls"` (the default), the client sends a user name and password inside TLS once
   the session is set up, and rdpmacd checks them with PAM. Any account that PAM accepts on this Mac

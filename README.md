@@ -6,7 +6,7 @@ from [IronRDP](https://github.com/Devolutions/IronRDP); screen capture, the curs
 mouse injection and virtual displays come from libscreenio, in this repository. rdpmac is free and
 open source under MIT OR Apache-2.0.
 
-rdpmac is young (0.3.x). It has been used with mstsc and FreeRDP on an Apple M4 Mac running macOS 26
+rdpmac is young (0.4.x). It has been used with mstsc and FreeRDP on an Apple M4 Mac running macOS 26
 and 27; other clients, Intel Macs and older macOS versions are untested. There are no signed
 releases yet: build it as described below.
 
