@@ -103,7 +103,7 @@ fn pick_rep(image: &NSImage, target_width: f64) -> Result<Retained<NSBitmapImage
             continue;
         };
         let distance = (bitmap.pixelsWide() as f64 - target_width).abs();
-        if best.as_ref().map_or(true, |(d, _)| distance < *d) {
+        if best.as_ref().is_none_or(|(d, _)| distance < *d) {
             best = Some((distance, bitmap.retain()));
         }
     }

@@ -6,11 +6,14 @@ use objc2_foundation::{NSString, NSURL};
 use crate::{Error, PrivacyPane, Result, SessionInfo};
 
 #[link(name = "CoreGraphics", kind = "framework")]
-#[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     // macOS 11 and later.
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
     fn AXIsProcessTrusted() -> bool;
 }
 
