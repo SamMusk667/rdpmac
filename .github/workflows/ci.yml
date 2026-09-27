@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: Build and test on macOS
+    runs-on: macos-latest
+    steps:
+      - name: Check out rdpmac
+        uses: actions/checkout@v5
+        with:
+          path: rdpmac
+
+      # The workspace patches IronRDP from ../IronRDP: branch rdpmac/nla of the IronRDP fork kept
+      # by the owner of this repository (README, "Building"). The IRONRDP_REPOSITORY variable
+      # names another fork.
+      - name: Check out the IronRDP fork
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ vars.IRONRDP_REPOSITORY || format('{0}/IronRDP', github.repository_owner) }}
+          ref: rdpmac/nla
+          path: IronRDP
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rdpmac
+
+      - name: Clippy
+        working-directory: rdpmac
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Tests that change the Mac (a real virtual display, the login keychain) are ignored.
+      - name: Tests
+        working-directory: rdpmac
+        run: cargo test --workspace --locked
+
+      - name: Menu-bar app
+        working-directory: rdpmac/app
+        run: swift build -c release
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+
+      - name: C header is current
+        working-directory: rdpmac
+        run: sh scripts/screenio-header.sh --verify
