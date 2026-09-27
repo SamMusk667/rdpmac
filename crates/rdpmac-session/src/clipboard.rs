@@ -1,4 +1,4 @@
-//! Clipboard sharing between the Mac and the client (MS-RDPECLIP): text and pictures.
+//! Clipboard sharing between the Mac and the client (MS-RDPECLIP): text, pictures and files.
 //!
 //! Each connection gets a backend and a worker thread that owns the pasteboard. The worker polls
 //! the pasteboard's change count and offers what is new to the client; what the client copies is
@@ -8,8 +8,13 @@
 //!
 //! Pictures go to the client as CF_DIB and as PNG, which keeps transparency; from the client the
 //! PNG is taken if offered, else the DIB. On the Mac they are PNG and TIFF (see [`clip_image`]).
+//!
+//! Files copied on the Mac are offered as a file list whose contents the client reads piece by
+//! piece; files copied on the client are fetched into a folder under ~/Library/Caches/rdpmac right
+//! away and put on the pasteboard once all have arrived (see [`clip_files`]).
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -18,12 +23,13 @@ use std::time::Duration;
 use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
-    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
+    FileContentsResponse, FileDescriptor, FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use ironrdp_server::{CliprdrServerFactory, ServerEvent, ServerEventSender};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
+use crate::clip_files::{self, Incoming, Outgoing, Step};
 use crate::clip_image::{self, Bitmap};
 
 const POLL: Duration = Duration::from_millis(500);
@@ -57,11 +63,18 @@ pub trait Pasteboard {
     fn read_png(&self) -> Option<Vec<u8>>;
     /// Replaces the pasteboard's contents with what is given.
     fn write(&mut self, text: Option<&str>, picture: Option<&Picture>) -> bool;
+    /// The files and folders on the pasteboard, as copied in Finder.
+    fn read_files(&self) -> Vec<PathBuf>;
+    /// Replaces the pasteboard's contents with these files and folders.
+    fn write_files(&mut self, paths: &[PathBuf]) -> bool;
+    fn clear(&mut self);
 }
 
 /// What the client can be asked for, in the order it is asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wanted {
+    /// A file list; its answer arrives as [`Command::RemoteFiles`].
+    Files(ClipboardFormatId),
     Text,
     Png(ClipboardFormatId),
     Dib(ClipboardFormatId),
@@ -71,17 +84,19 @@ impl Wanted {
     fn format(self) -> ClipboardFormatId {
         match self {
             Wanted::Text => ClipboardFormatId::CF_UNICODETEXT,
-            Wanted::Png(id) | Wanted::Dib(id) => id,
+            Wanted::Files(id) | Wanted::Png(id) | Wanted::Dib(id) => id,
         }
     }
 
-    /// What to ask the client for among the formats it offers: text, and one picture format.
+    /// What to ask the client for among the formats it offers: files alone, else text and one
+    /// picture format.
     fn from_offer(formats: &[ClipboardFormat]) -> VecDeque<Wanted> {
         let has = |id: ClipboardFormatId| formats.iter().any(|f| f.id == id);
-        let png = formats
-            .iter()
-            .find(|f| f.name.as_ref().is_some_and(|n| n.value().eq_ignore_ascii_case(PNG_NAME)))
-            .map(|f| Wanted::Png(f.id));
+        let named = |name: &str| formats.iter().find(|f| f.name.as_ref().is_some_and(|n| n.value().eq_ignore_ascii_case(name)));
+        if let Some(files) = named(ClipboardFormatName::FILE_LIST.value()) {
+            return VecDeque::from([Wanted::Files(files.id)]);
+        }
+        let png = named(PNG_NAME).map(|f| Wanted::Png(f.id));
         let dib = [ClipboardFormatId::CF_DIBV5, ClipboardFormatId::CF_DIB]
             .into_iter()
             .find(|&id| has(id))
@@ -105,6 +120,17 @@ enum Command {
     RemoteCopy(Vec<ClipboardFormat>),
     /// The client's answer to our last request; `None` when it could not give the data.
     Received(Option<Vec<u8>>),
+    /// The client's file list, the answer to a request for it.
+    RemoteFiles(Vec<FileDescriptor>),
+    /// The client wants a size or a piece of a file we offered.
+    FileRequest(FileContentsRequest),
+    /// The client's answer to a File Contents Request: its stream id and the data, if any.
+    FileData(u32, Option<Vec<u8>>),
+    /// What the client agreed to: whether files can go to it.
+    Capabilities(ClipboardGeneralCapabilityFlags),
+    /// The client locked or unlocked our file list under this clipDataId.
+    Lock(u32),
+    Unlock(u32),
 }
 
 /// What the client is being asked for, and what it sent so far.
@@ -125,16 +151,56 @@ struct Sync {
     last_text: Option<String>,
     /// The picture last offered to or received from the client, by [`Pasteboard::picture_id`].
     last_picture: Option<u64>,
+    /// Files last offered to or received from the client.
+    last_files: Vec<PathBuf>,
     fetch: Fetch,
+    outgoing: Outgoing,
+    incoming: Option<Incoming>,
+    /// Where files from the client go, a folder for each transfer.
+    cache: PathBuf,
+    /// The last File Contents stream id used.
+    stream: u32,
+    /// Whether the client negotiated file copy; without it copied files go as their names.
+    files_enabled: bool,
 }
 
 impl Sync {
     fn new(pasteboard: &impl Pasteboard) -> Self {
+        Self::with_cache(pasteboard, cache_folder())
+    }
+
+    fn with_cache(pasteboard: &impl Pasteboard, cache: PathBuf) -> Self {
         Self {
             last_count: pasteboard.change_count(),
             last_text: None,
             last_picture: None,
+            last_files: Vec::new(),
             fetch: Fetch::default(),
+            outgoing: Outgoing::default(),
+            incoming: None,
+            cache,
+            stream: 0,
+            files_enabled: false,
+        }
+    }
+
+    /// Offers the files on the pasteboard, if there are any.
+    fn offer_files(&mut self, files: Vec<PathBuf>) -> Option<ClipboardMessage> {
+        let descriptors = self.outgoing.offer(&files);
+        if descriptors.is_empty() {
+            return None;
+        }
+        info!(files = files.len(), entries = descriptors.len(), "files copied on the Mac, offering them to the client");
+        self.last_files = files;
+        self.last_text = None;
+        self.last_picture = None;
+        Some(ClipboardMessage::SendInitiateFileCopy(descriptors))
+    }
+
+    /// Gives up a transfer from the client, for a newer copy on either side or a silent client.
+    fn cancel_incoming(&mut self, why: &str) {
+        if self.incoming.take().is_some() {
+            warn!(why, "stopped fetching files copied on the client");
         }
     }
 
@@ -156,11 +222,23 @@ impl Sync {
 
     /// Called periodically: offers what was copied on the Mac since the last look.
     fn poll(&mut self, pasteboard: &impl Pasteboard) -> Option<ClipboardMessage> {
+        if self.incoming.as_ref().is_some_and(|i| i.last_activity.elapsed() > clip_files::STALL) {
+            self.cancel_incoming("the client stopped sending the files");
+        }
         let count = pasteboard.change_count();
         if count == self.last_count {
             return None;
         }
         self.last_count = count;
+        self.cancel_incoming("something else was copied on the Mac");
+        let files = pasteboard.read_files();
+        if !files.is_empty() && self.files_enabled {
+            if files == self.last_files {
+                return None;
+            }
+            return self.offer_files(files);
+        }
+        self.last_files.clear();
         let text = Self::usable(pasteboard.read_text());
         let picture = pasteboard.picture_id();
         if (text.is_none() && picture.is_none()) || (text == self.last_text && picture == self.last_picture) {
@@ -180,6 +258,12 @@ impl Sync {
     fn handle(&mut self, command: Command, pasteboard: &mut impl Pasteboard) -> Option<ClipboardMessage> {
         match command {
             Command::Announce => {
+                let files = pasteboard.read_files();
+                if !files.is_empty() && self.files_enabled {
+                    if let Some(offer) = self.offer_files(files) {
+                        return Some(offer);
+                    }
+                }
                 let text = Self::usable(pasteboard.read_text());
                 let picture = pasteboard.picture_id();
                 let formats = Self::formats(text.is_some(), picture.is_some());
@@ -189,6 +273,7 @@ impl Sync {
             }
             Command::Send(format) => Some(ClipboardMessage::SendFormatData(Self::data(format, pasteboard))),
             Command::RemoteCopy(formats) => {
+                self.cancel_incoming("the client copied something else");
                 if self.fetch.current.is_some() {
                     self.fetch.stale += 1;
                 }
@@ -207,6 +292,7 @@ impl Sync {
                 let wanted = self.fetch.current.take()?;
                 match (wanted, data) {
                     (_, None) => debug!(format = ?wanted.format(), "client could not provide its clipboard data"),
+                    (Wanted::Files(_), Some(_)) => warn!("the client's file list could not be read"),
                     (Wanted::Text, Some(data)) => match FormatDataResponse::new_data(data).to_unicode_string() {
                         Ok(text) => self.fetch.text = Some(text).filter(|t| !t.is_empty()),
                         Err(e) => warn!(%e, "client clipboard text could not be decoded"),
@@ -218,6 +304,79 @@ impl Sync {
                     },
                 }
                 self.next(pasteboard)
+            }
+            Command::RemoteFiles(files) => {
+                if self.fetch.stale > 0 {
+                    self.fetch.stale -= 1;
+                    return None;
+                }
+                if !matches!(self.fetch.current.take(), Some(Wanted::Files(_))) {
+                    return None;
+                }
+                self.fetch.queue.clear();
+                info!(entries = files.len(), "files copied on the client, fetching them");
+                let incoming = clip_files::transfer_folder(&self.cache)
+                    .and_then(|folder| Incoming::new(folder, files, self.stream));
+                match incoming {
+                    Ok(incoming) => {
+                        // Until the files are here, a paste on the Mac must not paste what was there.
+                        pasteboard.clear();
+                        self.last_count = pasteboard.change_count();
+                        self.last_text = None;
+                        self.last_picture = None;
+                        self.last_files.clear();
+                        let mut incoming = incoming;
+                        let step = incoming.advance();
+                        self.incoming = Some(incoming);
+                        self.step(step, pasteboard)
+                    }
+                    Err(e) => {
+                        warn!(%e, folder = %self.cache.display(), "no folder for files copied on the client");
+                        None
+                    }
+                }
+            }
+            Command::FileData(stream, data) => {
+                let step = self.incoming.as_mut()?.received(stream, data.as_deref());
+                self.step(step, pasteboard)
+            }
+            Command::FileRequest(request) => Some(ClipboardMessage::SendFileContentsResponse(self.outgoing.answer(&request))),
+            Command::Capabilities(flags) => {
+                self.files_enabled = flags.contains(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED);
+                debug!(?flags, "clipboard capabilities agreed with the client");
+                None
+            }
+            Command::Lock(id) => {
+                self.outgoing.lock(id);
+                None
+            }
+            Command::Unlock(id) => {
+                self.outgoing.unlock(id);
+                None
+            }
+        }
+    }
+
+    /// Carries a transfer from the client one step further.
+    fn step(&mut self, step: Step, pasteboard: &mut impl Pasteboard) -> Option<ClipboardMessage> {
+        if let Some(incoming) = &self.incoming {
+            self.stream = incoming.stream();
+        }
+        match step {
+            Step::Request(request) => Some(ClipboardMessage::SendFileContentsRequest(request)),
+            Step::Wait => None,
+            Step::Done(tops) => {
+                self.incoming = None;
+                let written = pasteboard.write_files(&tops);
+                info!(files = tops.len(), written, "files copied on the client, now on the Mac");
+                self.last_count = pasteboard.change_count();
+                self.last_files = pasteboard.read_files();
+                None
+            }
+            Step::Failed => {
+                self.incoming = None;
+                warn!("fetching files copied on the client failed");
+                None
             }
         }
     }
@@ -349,7 +508,10 @@ impl CliprdrBackend for Backend {
     }
 
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        ClipboardGeneralCapabilityFlags::empty()
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
+            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED
     }
 
     fn on_ready(&mut self) {
@@ -360,7 +522,9 @@ impl CliprdrBackend for Backend {
         self.command(Command::Announce);
     }
 
-    fn on_process_negotiated_capabilities(&mut self, _capabilities: ClipboardGeneralCapabilityFlags) {}
+    fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
+        self.command(Command::Capabilities(capabilities));
+    }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
         self.command(Command::RemoteCopy(available_formats.to_vec()));
@@ -375,13 +539,33 @@ impl CliprdrBackend for Backend {
         self.command(Command::Received(data));
     }
 
-    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
+    fn on_file_contents_request(&mut self, request: FileContentsRequest) {
+        self.command(Command::FileRequest(request));
+    }
 
-    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {}
+    fn on_file_contents_response(&mut self, response: FileContentsResponse<'_>) {
+        let data = (!response.is_error()).then(|| response.data().to_vec());
+        self.command(Command::FileData(response.stream_id(), data));
+    }
 
-    fn on_lock(&mut self, _data_id: LockDataId) {}
+    fn on_lock(&mut self, data_id: LockDataId) {
+        self.command(Command::Lock(data_id.0));
+    }
 
-    fn on_unlock(&mut self, _data_id: LockDataId) {}
+    fn on_unlock(&mut self, data_id: LockDataId) {
+        self.command(Command::Unlock(data_id.0));
+    }
+
+    fn on_remote_file_list(&mut self, files: &[FileDescriptor], _clip_data_id: Option<u32>) {
+        self.command(Command::RemoteFiles(files.to_vec()));
+    }
+}
+
+/// ~/Library/Caches/rdpmac/clipboard, where files copied on the client are put.
+fn cache_folder() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Caches/rdpmac/clipboard"))
+        .unwrap_or_else(|| std::env::temp_dir().join("rdpmac-clipboard"))
 }
 
 fn worker(rx: Receiver<Command>, events: EventSender) {
@@ -434,18 +618,27 @@ impl Pasteboard for NoPasteboard {
     fn write(&mut self, _text: Option<&str>, _picture: Option<&Picture>) -> bool {
         false
     }
+    fn read_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    fn write_files(&mut self, _paths: &[PathBuf]) -> bool {
+        false
+    }
+    fn clear(&mut self) {}
 }
 
 #[cfg(target_os = "macos")]
 mod mac {
     use std::hash::{Hash, Hasher};
+    use std::path::PathBuf;
 
+    use objc2::rc::Retained;
+    use objc2::runtime::ProtocolObject;
     use objc2_app_kit::{
         NSPasteboard, NSPasteboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString,
-        NSPasteboardTypeTIFF,
+        NSPasteboardTypeTIFF, NSPasteboardWriting,
     };
-    use objc2::rc::Retained;
-    use objc2_foundation::{NSData, NSString};
+    use objc2_foundation::{NSArray, NSData, NSString, NSURL};
 
     use super::{Pasteboard, Picture};
     use crate::clip_image::{codec, Bitmap};
@@ -534,6 +727,36 @@ mod mac {
             }
             written
         }
+
+        fn read_files(&self) -> Vec<PathBuf> {
+            let Some(items) = self.board().pasteboardItems() else {
+                return Vec::new();
+            };
+            items
+                .iter()
+                .filter_map(|item| {
+                    let url = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+                    // Finder copies file reference URLs (file:///.file/id=...); resolve them to paths.
+                    let path = NSURL::URLWithString(&url)?.filePathURL()?.path()?;
+                    Some(PathBuf::from(path.to_string()))
+                })
+                .collect()
+        }
+
+        fn write_files(&mut self, paths: &[PathBuf]) -> bool {
+            let urls: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = paths
+                .iter()
+                .filter_map(|path| path.to_str())
+                .map(|path| ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(path))))
+                .collect();
+            let pasteboard = self.board();
+            pasteboard.clearContents();
+            pasteboard.writeObjects(&NSArray::from_retained_slice(&urls))
+        }
+
+        fn clear(&mut self) {
+            self.board().clearContents();
+        }
     }
 
     #[cfg(test)]
@@ -597,6 +820,23 @@ mod mac {
         }
 
         #[test]
+        fn files_are_written_as_urls_and_read_back_as_paths() {
+            let mut pb = Private::new();
+            let dir = std::env::temp_dir().join(format!("rdpmac-pasteboard-files-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("folder")).unwrap();
+            std::fs::write(dir.join("a file.txt"), b"x").unwrap();
+            let paths = [dir.join("a file.txt"), dir.join("folder")];
+            assert!(pb.0.write_files(&paths));
+            let back: Vec<PathBuf> = pb.0.read_files().iter().map(|p| p.canonicalize().unwrap()).collect();
+            let want: Vec<PathBuf> = paths.iter().map(|p| p.canonicalize().unwrap()).collect();
+            assert_eq!(back, want);
+            assert_eq!(pb.0.picture_id(), None);
+            pb.0.clear();
+            assert!(pb.0.read_files().is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn copied_files_offer_no_picture() {
             let pb = Private::new();
             let board = pb.0.board();
@@ -620,6 +860,7 @@ mod tests {
         count: isize,
         text: Option<String>,
         picture: Option<Picture>,
+        files: Vec<PathBuf>,
     }
 
     impl FakePasteboard {
@@ -627,6 +868,7 @@ mod tests {
             self.count += 1;
             self.text = text.map(str::to_owned);
             self.picture = picture;
+            self.files.clear();
         }
     }
 
@@ -666,6 +908,17 @@ mod tests {
         fn write(&mut self, text: Option<&str>, picture: Option<&Picture>) -> bool {
             self.copy(text, picture.cloned());
             true
+        }
+        fn read_files(&self) -> Vec<PathBuf> {
+            self.files.clone()
+        }
+        fn write_files(&mut self, paths: &[PathBuf]) -> bool {
+            self.copy(None, None);
+            self.files = paths.to_vec();
+            true
+        }
+        fn clear(&mut self) {
+            self.copy(None, None);
         }
     }
 
@@ -791,6 +1044,95 @@ mod tests {
         assert!(pb.text.is_none());
         assert!(sync.handle(Command::Received(text_data("new")), &mut pb).is_none());
         assert_eq!(pb.text.as_deref(), Some("new"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rdpmac-clipboard-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn mac_files_are_offered_and_their_contents_served() {
+        let dir = scratch("offer");
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+        let mut pb = FakePasteboard::default();
+        let mut sync = Sync::with_cache(&pb, dir.join("cache"));
+        let mut no_files = Sync::with_cache(&pb, dir.join("cache"));
+        pb.copy(Some("notes.txt"), None);
+        pb.files = vec![dir.join("notes.txt")];
+        assert_eq!(
+            offered(no_files.poll(&pb)),
+            Some(vec![ClipboardFormatId::CF_UNICODETEXT]),
+            "a client without file copy gets the names"
+        );
+        sync.handle(Command::Capabilities(ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED), &mut pb);
+        match sync.poll(&pb) {
+            Some(ClipboardMessage::SendInitiateFileCopy(files)) => {
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].name, "notes.txt");
+                assert_eq!(files[0].file_size, Some(5));
+            }
+            other => panic!("expected a file offer, got {other:?}"),
+        }
+        assert!(sync.poll(&pb).is_none());
+        let request = FileContentsRequest {
+            stream_id: 3,
+            index: 0,
+            flags: ironrdp_cliprdr::pdu::FileContentsFlags::RANGE,
+            position: 1,
+            requested_size: 3,
+            data_id: None,
+        };
+        match sync.handle(Command::FileRequest(request), &mut pb) {
+            Some(ClipboardMessage::SendFileContentsResponse(response)) => {
+                assert_eq!((response.stream_id(), response.data()), (3, &b"ell"[..]));
+            }
+            other => panic!("expected file contents, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn client_files_are_fetched_then_put_on_the_pasteboard() {
+        let dir = scratch("fetch");
+        let mut pb = FakePasteboard::default();
+        let mut sync = Sync::with_cache(&pb, dir.join("cache"));
+        pb.copy(Some("before"), None);
+        let offer = vec![
+            ClipboardFormat::new(ClipboardFormatId(0xC0FE)).with_name(ClipboardFormatName::FILE_LIST),
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+        ];
+        assert_eq!(asked(sync.handle(Command::RemoteCopy(offer), &mut pb)), Some(ClipboardFormatId(0xC0FE)));
+        let files = vec![FileDescriptor::new("hi.txt").with_file_size(2)];
+        let request = match sync.handle(Command::RemoteFiles(files), &mut pb) {
+            Some(ClipboardMessage::SendFileContentsRequest(r)) => r,
+            other => panic!("expected a file request, got {other:?}"),
+        };
+        assert!(pb.text.is_none() && pb.files.is_empty(), "the old contents are gone meanwhile");
+        assert!(sync.handle(Command::FileData(request.stream_id, Some(b"hi".to_vec())), &mut pb).is_none());
+        assert_eq!(pb.files.len(), 1);
+        assert_eq!(std::fs::read(&pb.files[0]).unwrap(), b"hi");
+        assert!(sync.poll(&pb).is_none(), "not offered back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_newer_copy_stops_fetching_files() {
+        let dir = scratch("cancel");
+        let mut pb = FakePasteboard::default();
+        let mut sync = Sync::with_cache(&pb, dir.join("cache"));
+        let offer = vec![ClipboardFormat::new(ClipboardFormatId(0xC0FE)).with_name(ClipboardFormatName::FILE_LIST)];
+        sync.handle(Command::RemoteCopy(offer), &mut pb);
+        let files = vec![FileDescriptor::new("big.bin").with_file_size(10)];
+        let Some(ClipboardMessage::SendFileContentsRequest(request)) = sync.handle(Command::RemoteFiles(files), &mut pb) else {
+            panic!("expected a file request");
+        };
+        remote_copy(&mut sync, &mut pb);
+        assert!(sync.handle(Command::FileData(request.stream_id, Some(vec![0; 10])), &mut pb).is_none());
+        assert!(pb.files.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
