@@ -257,3 +257,33 @@ Progress:
   See `docs/refresh.md` and `docs/audio.md`.
 - 2026-09-26: Pictures and files on the clipboard, both ways: pictures as PNG, CF_DIB and CF_DIBV5,
   files and folders through File Contents requests. See `docs/clipboard.md`.
+
+## M5 Open-source release (from 2026-09-27)
+
+ADR-0002 made rdpmac fully open source under MIT OR Apache-2.0 and put this milestone in place of
+"Pro and commercialisation".
+
+| Order | Item | State |
+|---|---|---|
+| 1 | MIT OR Apache-2.0; libscreenio in this repository with its history; documentation in English; CONTRIBUTING.md, SECURITY.md and CI | Done (2026-09-27) |
+| 2 | Publish the repository and the IronRDP fork with branch `rdpmac/nla`; CI passing on GitHub's macOS runners | To do |
+| 3 | Developer ID signing and notarization; the .pkg on GitHub Releases; automatic updates | To do; needs an Apple Developer account |
+| 4 | Propose the five IronRDP patches upstream | To do |
+| 5 | Who may connect: TLS logons limited to the user rdpmacd runs as, or to a list, as NLA already is | To do |
+
+After M5, for people who use rdpmac every day, in this order:
+
+1. Keyboard: check which macOS system shortcuts injected events fail to trigger (Cmd+Tab,
+   Spotlight, screenshots) and handle them; layouts other than US; an optional mapping of Windows'
+   Ctrl shortcuts to Cmd.
+2. Input methods: Chinese and Japanese input through the Mac's own input sources, verified with
+   mstsc.
+3. Clients: Windows App on macOS, iOS and Android; recent FreeRDP; Intel Macs.
+4. Weak networks: bitrate from the round-trip time as well as from frame acknowledgements;
+   reconnecting after a dropped connection.
+5. A Mac with a display attached: blanking its own screen while a session runs.
+6. Files copied on the client fetched only when Finder pastes them.
+7. Several virtual displays for mstsc's multi-monitor sessions.
+
+M4's other items stay open and come after these: Kerberos, physical display modes, MDM managed
+preferences, audit records and a session recording interface, login-window research.
