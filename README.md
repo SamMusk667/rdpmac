@@ -67,6 +67,10 @@ sh scripts/sign-dev.sh setup        # once per Mac: a self-signed "rdpmac Develo
 sh scripts/build-app.sh --pkg       # gives build/rdpmac.app and build/rdpmac-VERSION.pkg
 ```
 
+Between releases the version reads like 0.4.0-dev55: the version in Cargo.toml, then the number of
+commits the build is made from. A build of the commit tagged v0.4.0 is plain 0.4.0. The welcome
+window, `rdpmacd --version`, the status and the log all show it.
+
 The installer puts rdpmac.app in Applications and opens it. The welcome window goes through three
 steps: turn the service on, allow Screen & System Audio Recording, allow Accessibility. Then it shows
 the address clients connect to and the certificate fingerprint. The menu-bar icon's menu has the

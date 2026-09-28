@@ -59,7 +59,7 @@ pub enum Codec {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "rdpmacd", version, about = "RDP server for the macOS console session")]
+#[command(name = "rdpmacd", version = env!("RDPMAC_VERSION"), about = "RDP server for the macOS console session")]
 pub struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "0.0.0.0:3389")]

@@ -4,7 +4,8 @@ Bug reports, measurements from other Macs and clients, and patches are welcome.
 
 ## Reporting a problem
 
-Say which rdpmac version, macOS version and Mac, and which client (mstsc, Windows App on which
+Say which rdpmac version (the welcome window and `rdpmacd --version` show it, such as
+0.4.0-dev55), macOS version and Mac, and which client (mstsc, Windows App on which
 platform, FreeRDP, IronRDP) and client version you used. Attach the daemon log for the time of the
 problem (`~/Library/Logs/rdpmac/rdpmacd.YYYY-MM-DD.log`, or the diagnostics bundle from the
 menu-bar app). For a wrong or corrupted picture, a recording made with `h264-dump` shows whether the

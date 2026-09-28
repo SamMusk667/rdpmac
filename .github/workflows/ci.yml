@@ -21,6 +21,8 @@ jobs:
         uses: actions/checkout@v5
         with:
           path: rdpmac
+          # All of the history: rdpmacd's version counts the commits it is built from.
+          fetch-depth: 0
 
       # The workspace patches IronRDP from ../IronRDP: branch rdpmac/nla of the IronRDP fork kept
       # by the owner of this repository (README, "Building"). The IRONRDP_REPOSITORY variable

@@ -58,10 +58,23 @@ struct MenuContent: View {
     }
 }
 
+/// The version this app was built as, such as 0.4.0-dev55 between releases; scripts/build-app.sh
+/// writes it into Info.plist.
+let appVersion = Bundle.main.object(forInfoDictionaryKey: "RDPMacVersion") as? String
+    ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    ?? "development"
+
 /// First-run guide: turn the server on, grant the two permissions, connect.
 struct WelcomeView: View {
     @ObservedObject var model: Model
     let windows: Windows
+
+    /// This app's version, and the server's when the running one differs, as it does until the
+    /// server restarts after an update.
+    private var versionLine: String {
+        guard let server = model.status?.version, server != appVersion else { return "Version \(appVersion)" }
+        return "Version \(appVersion), server \(server)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -118,6 +131,11 @@ struct WelcomeView: View {
 
             HStack {
                 Button("Settings…") { windows.showSettings(model) }.disabled(!model.running)
+                Spacer()
+                Text(versionLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                 Spacer()
                 Button("Done") { windows.close("welcome") }.keyboardShortcut(.defaultAction)
             }

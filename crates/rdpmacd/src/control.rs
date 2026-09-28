@@ -233,7 +233,7 @@ impl Control {
             .collect();
         json!({
             "ok": true,
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": env!("RDPMAC_VERSION"),
             "pid": std::process::id(),
             "started": self.started,
             "permissions": permissions(&info),

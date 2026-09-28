@@ -389,6 +389,6 @@ async fn main() -> anyhow::Result<()> {
             warn!("control socket unavailable: {e:#}");
         }
     });
-    info!(listen = %args.listen, "rdpmacd listening");
+    info!(listen = %args.listen, version = env!("RDPMAC_VERSION"), "rdpmacd listening");
     server.run().await.context("server stopped with an error")
 }

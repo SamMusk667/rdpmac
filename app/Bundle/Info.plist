@@ -17,7 +17,9 @@
 	<key>CFBundleShortVersionString</key>
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
-	<string>@VERSION@</string>
+	<string>@BUILD@</string>
+	<key>RDPMacVersion</key>
+	<string>@FULL_VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
