@@ -10,6 +10,8 @@ pub mod clipboard;
 pub mod cursor;
 pub mod display;
 #[cfg(target_os = "macos")]
+pub mod drives;
+#[cfg(target_os = "macos")]
 pub mod dump;
 #[cfg(target_os = "macos")]
 pub mod gfx;

@@ -335,6 +335,15 @@ async fn main() -> anyhow::Result<()> {
     info!(security = ?args.security, "client authentication");
     let validator: Arc<dyn CredentialValidator> = Arc::new(status::Recorded::new(validator, tracker.clone()));
 
+    // Drives an rdpmacd that stopped without unmounting them left in ~/RDP Drives (ADR-0003).
+    let drives_root = directories::BaseDirs::new().map(|base| rdpmac_session::drives::default_root(base.home_dir()));
+    match &drives_root {
+        Some(root) => {
+            rdpmac_session::drives::reap_stale_mounts(root);
+        }
+        None => warn!("no home folder: drives that clients share are not mounted"),
+    }
+
     let server = RdpServer::builder().with_addr(args.listen);
     let server = match args.security {
         Security::Tls => server.with_tls(acceptor),
@@ -362,6 +371,9 @@ async fn main() -> anyhow::Result<()> {
                 rdpmac_session::sound::SoundFactory::new(source, args.mute_mac, args.audio_rate)
                     .with_suppression(suppressed.clone()),
             ) as Box<dyn ironrdp_server::SoundServerFactory>
+        }))
+        .with_rdpdr_factory(drives_root.filter(|_| !args.no_drives).map(|root| {
+            Box::new(rdpmac_session::drives::DriveFactory::new(root)) as Box<dyn ironrdp_server::RdpdrServerFactory>
         }))
         .with_gfx_factory(gfx.clone().map(|link| {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>

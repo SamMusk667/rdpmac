@@ -28,6 +28,8 @@ releases yet: build it as described below.
 - **Clipboard.** Text, pictures, and files and folders, both ways (docs/clipboard.md).
 - **Sound.** What the Mac plays reaches the client, paced to real time, while the Mac itself is
   muted (docs/audio.md).
+- **Drives.** The drives a client shares appear in `~/RDP Drives`, named like "C on DESKTOP-01",
+  to read and write (docs/drives.md).
 - **Menu-bar app and installer.** A welcome window walks through the permissions; the menu shows the
   state and connections and has settings, certificate import, logs and a diagnostics bundle.
 
@@ -173,7 +175,7 @@ menu-bar app says so and offers a restart button.
 
 `~/Library/Application Support/rdpmac/config.toml` holds the settings, under the names of the
 command-line flags (`listen`, `auth`, `security`, `pam-service`, `allow-users`, `codec`,
-`parallel-conversion`, `clipboard`, `audio`, `mute-mac`, `audio-rate`, `resolution`,
+`parallel-conversion`, `clipboard`, `audio`, `drives`, `mute-mac`, `audio-rate`, `resolution`,
 `virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given on the command
 line win, and `--config` names another file. An unknown key or a value out of range stops the
 start, with the reason.
@@ -258,7 +260,8 @@ work of M1 to M3 is done: capture, input and H.264, the virtual display, the men
 the service, permission guidance, certificate import, settings, logs and diagnostics, signing and the
 installer. From M4, NLA with the credential store, AVC444, sound, and pictures and files on the
 clipboard are done; Kerberos waits for an Active Directory domain to test with. M5 is the open-source
-release (docs/adr/0002-fully-open-source.md).
+release (docs/adr/0002-fully-open-source.md). Drive redirection works with FreeRDP and is still to be tested
+with mstsc and Windows App (docs/adr/0003-drive-redirection-through-a-local-nfs-mount.md).
 
 Known limitations of the released IronRDP 0.13.0: cursor shapes larger than 96 pixels are not sent
 (large pointer updates exist only on IronRDP's master branch), horizontal wheel events have no
@@ -270,11 +273,13 @@ variant, and mouse button events carry no position, so the last move counts.
 |---|---|
 | [ADR-0001](docs/adr/0001-macos-rdp-server-on-libscreenio-and-ironrdp.md) | The architecture: IronRDP and libscreenio, encoding, authentication, processes, milestones |
 | [ADR-0002](docs/adr/0002-fully-open-source.md) | Fully open source under MIT OR Apache-2.0 |
+| [ADR-0003](docs/adr/0003-drive-redirection-through-a-local-nfs-mount.md) | Drive redirection through a local NFS mount |
 | [Milestones](docs/milestones.md) | Progress, measurements, what is left |
 | [AVC444](docs/avc444.md) | Full-colour H.264 with VideoToolbox |
 | [Refresh](docs/refresh.md) | Pausing, refreshing and recording the picture |
 | [Sound](docs/audio.md) | Capturing, pacing and muting |
 | [Clipboard](docs/clipboard.md) | Text, pictures and files |
+| [Drives](docs/drives.md) | The client's drives in `~/RDP Drives` |
 | [NLA](docs/nla.md) | Network Level Authentication and the credential store |
 | [libscreenio](docs/libscreenio.md) | The capture and injection library and its C ABI |
 
@@ -300,5 +305,7 @@ additional terms or conditions.
 
 - [IronRDP](https://github.com/Devolutions/IronRDP), by Devolutions, provides the protocol.
 - [macrdp](https://github.com/clintcan/macrdp) documented client behaviour that rdpmac relies on,
-  such as mstsc playing 48 kHz sound slower than real time and Explorer's folder copies.
+  such as mstsc playing 48 kHz sound slower than real time and Explorer's folder copies. Drive
+  redirection is adapted from its server side of RDPDR and its NFS bridge (MIT OR Apache-2.0).
+- [nfsserve](https://github.com/huggingface/nfsserve) (BSD-3-Clause) serves the redirected drives.
 - [FreeRDP](https://github.com/FreeRDP/FreeRDP) served as reference implementation and test client.

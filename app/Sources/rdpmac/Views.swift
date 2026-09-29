@@ -173,6 +173,7 @@ struct SettingsView: View {
     @State private var initial: Choices?
     @State private var clipboard = true
     @State private var audio = true
+    @State private var drives = true
     @State private var muteMac = true
     @State private var fps = 30
     @State private var nla = false
@@ -207,6 +208,7 @@ struct SettingsView: View {
             Toggle("Play the Mac's sound on the client", isOn: $audio)
             Toggle("Mute the Mac meanwhile", isOn: $muteMac)
                 .disabled(!audio)
+            Toggle("Mount the drives the client shares in ~/RDP Drives", isOn: $drives)
             Stepper("Frame rate: \(fps) per second", value: $fps, in: 5...60, step: 5)
             Toggle("Require Network Level Authentication (NLA)", isOn: $nla)
                 .disabled(model.status?.nla == nil)
@@ -241,6 +243,7 @@ struct SettingsView: View {
             parallelConversion = file.parallelConversion ?? effective?.parallelConversion ?? true
             clipboard = file.clipboard ?? effective?.clipboard ?? true
             audio = file.audio ?? effective?.audio ?? true
+            drives = file.drives ?? effective?.drives ?? true
             muteMac = file.muteMac ?? effective?.muteMac ?? true
             fps = file.fps ?? effective?.fps ?? 30
             nla = (file.security ?? effective?.security ?? "tls") == "nla"
@@ -259,6 +262,7 @@ struct SettingsView: View {
         var h264: Bool
         var clipboard: Bool
         var audio: Bool
+        var drives: Bool
         var muteMac: Bool
         var fps: Int
         var nla: Bool
@@ -266,7 +270,7 @@ struct SettingsView: View {
 
     private var choices: Choices {
         Choices(listen: listen, followClient: followClient, ownDisplay: ownDisplay, h264: codec != "remotefx",
-                clipboard: clipboard, audio: audio, muteMac: muteMac, fps: fps, nla: nla)
+                clipboard: clipboard, audio: audio, drives: drives, muteMac: muteMac, fps: fps, nla: nla)
     }
 
     private var restarts: Bool {
@@ -283,6 +287,7 @@ struct SettingsView: View {
         settings.parallelConversion = parallelConversion
         settings.clipboard = clipboard
         settings.audio = audio
+        settings.drives = drives
         settings.muteMac = muteMac
         settings.fps = fps
         settings.security = nla ? "nla" : "tls"

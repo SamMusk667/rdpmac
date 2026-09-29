@@ -287,3 +287,16 @@ After M5, for people who use rdpmac every day, in this order:
 
 M4's other items stay open and come after these: Kerberos, physical display modes, MDM managed
 preferences, audit records and a session recording interface, login-window research.
+
+## Drive redirection (from 2026-09-29)
+
+ADR-0003 decided how the drives a client shares reach the Mac: each is mounted at
+`~/RDP Drives/<drive> on <client>` through an NFS server inside rdpmacd. The work was brought
+forward ahead of the list above, in the ADR's four steps:
+
+| Step | Item | State |
+|---|---|---|
+| 1 | Protocol: the server side of RDPDR in the IronRDP fork, with a unit test for every PDU | Done (2026-09-29): branch `rdpmac/rdpdr` of the fork; 16 PDU tests and 9 tests of the channel (handshake, drives accepted and other devices declined, removal, stat, listing, failure status, timeout, end of connection) |
+| 2 | Read-only drives: the hardened NFS server, the mounts and their life cycle, answers for macOS's own names | Done with FreeRDP (2026-09-29): 14 tests in rdpmac-session, one of them mounting through macOS's NFS client; end to end with sfreerdp on the same Mac, a 5 MiB read with equal SHA-256 in 0.05 s and 300 files listed in 0.06 s (docs/drives.md). mstsc still to test |
+| 3 | Writing, with macOS's own files kept on the Mac | Done with FreeRDP (2026-09-29): 18 tests in rdpmac-session and 10 of the channel; end to end with sfreerdp, a 5 MiB copy onto the drive with equal SHA-256 in 0.28 s, SQLite, renaming over a file, setting times, and no `._` or `.DS_Store` file on the client (docs/drives.md). mstsc still to test |
+| 4 | Finishing: the setting in the app, docs/drives.md, mstsc and Windows App, timeouts tuned on a slow link | Next |

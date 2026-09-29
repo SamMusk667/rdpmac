@@ -38,6 +38,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub drives: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mute_mac: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_rate: Option<u32>,
@@ -149,6 +151,9 @@ impl Settings {
         if let (Some(v), true) = (self.audio, unset("no_audio")) {
             args.no_audio = !v;
         }
+        if let (Some(v), true) = (self.drives, unset("no_drives")) {
+            args.no_drives = !v;
+        }
         if let (Some(v), true) = (self.mute_mac, unset("mute_mac")) {
             args.mute_mac = v;
         }
@@ -203,6 +208,7 @@ impl Settings {
             parallel_conversion: Some(args.parallel_conversion),
             clipboard: Some(!args.no_clipboard),
             audio: Some(!args.no_audio),
+            drives: Some(!args.no_drives),
             mute_mac: Some(args.mute_mac),
             audio_rate: Some(args.audio_rate),
             resolution: Some(args.resolution),
@@ -271,6 +277,7 @@ mod tests {
         assert!(with(|s| s.codec = Some(Codec::Remotefx)), "H.264 is set up at start");
         assert!(with(|s| s.fps = Some(20)));
         assert!(with(|s| s.audio = Some(false)), "the sound channel is offered from the start");
+        assert!(with(|s| s.drives = Some(false)), "the drive channel is offered from the start");
         assert!(with(|s| s.h264_dump = Some(true)), "recording is set up at start");
         assert!(with(|s| s.mute_mac = Some(false)), "the sound channel takes it at start");
         assert!(with(|s| s.allow_users = Some(vec!["admin".into()])), "logons are checked from the start");

@@ -93,6 +93,10 @@ pub struct Args {
     #[arg(long)]
     pub no_audio: bool,
 
+    /// Do not mount the drives clients share in ~/RDP Drives (drive redirection).
+    #[arg(long)]
+    pub no_drives: bool,
+
     /// Mute the Mac's own sound output while a client plays the sound, as Windows does.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub mute_mac: bool,

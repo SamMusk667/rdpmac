@@ -24,6 +24,8 @@ async-trait.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
+nfsserve.workspace = true
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
