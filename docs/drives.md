@@ -10,12 +10,14 @@ Windows App are still to be tested (step 4).
 
 ## How it works
 
-- **Protocol.** The server side of the RDPDR channel is in the IronRDP fork, branch `rdpmac/rdpdr`:
-  the server-to-client PDUs in `ironrdp-rdpdr`, and in `ironrdp-server` a processor and a handle
-  (`RdpdrHandle`) for opening, listing, querying, reading, writing, truncating, setting the times of,
-  renaming and deleting the client's files. Each request gives up after 30 seconds. The server
-  offers only drives and declines other devices. Drive traffic goes after sound and video in each
-  batch of outgoing messages.
+- **Protocol.** The RDPDR channel is IronRDP's own server side (`ironrdp_rdpdr::server::RdpdrServer`),
+  with six small changes on branch `rdpmac/nla` of the fork, to be offered upstream. The server sends
+  User Logged On after the capability exchange, without which clients announce no drives. It tells
+  the backend each request's completion ID, each device's type and the result of a set-information
+  request, and it names four more NTSTATUS codes. Drive traffic goes after sound and video in each
+  batch of outgoing messages. rdpmac's backend (`crates/rdpmac-session/src/drives/rdpdr.rs`) accepts
+  only drives and declines other devices. It opens, lists, queries, reads, writes, truncates, sets
+  the times of, renames and deletes the client's files, and each request gives up after 30 seconds.
 - **File system.** For each drive rdpmacd runs an NFSv3 server (the nfsserve crate) on a loopback
   port and mounts it with `mount_nfs`, as the user it runs as
   (`crates/rdpmac-session/src/drives`). NFS calls become RDPDR requests:
@@ -81,6 +83,9 @@ Windows App are still to be tested (step 4).
 | Finder | a browsable NFS volume named "Share on E2E-CLIENT" |
 | Client disconnects | unmounted at once, folder removed, nothing left mounted |
 
+The same checks gave the same results after the switch to upstream IronRDP's RDPDR server later that
+day: mounted after 3.3 s, a 5 MiB copy in 0.31 s, 300 files listed in 0.07 s.
+
 ## Clients
 
 - **FreeRDP 3.32.0-dev** (commit fd769f89f of 2026-09-20 and later): `drive_file_read` passes the
@@ -92,9 +97,12 @@ Windows App are still to be tested (step 4).
   file, so the parts past the end are answered on the Mac and never sent.
 - **FreeRDP** cannot set a folder's times: it keeps no handle to a folder. The failure is logged and
   otherwise ignored, since reporting it would tell macOS the folder is gone.
-- **FreeRDP and IronRDP's client** send a drive's full name in DeviceData as 8-bit characters,
-  where the specification asks for UTF-16; both are read. FreeRDP cuts PreferredDosName to eight
-  characters, so DeviceData wins when present.
+- **FreeRDP** sends a drive's full name in DeviceData as 8-bit characters, where the specification
+  asks for UTF-16, which IronRDP's client sends; both are read. FreeRDP cuts PreferredDosName to
+  eight characters, so DeviceData wins when present.
+- **FreeRDP** answers a query about a file ID it does not know without the Length field. IronRDP's
+  server cannot decode that answer and ends the connection, so rdpmac queries only handles it has
+  just opened.
 - **mstsc and Windows App**: not yet tested with rdpmac. macrdp found that mstsc needs the Client ID
   Confirm together with the capability request, and SYNCHRONIZE in the access rights of a file it
   reads; rdpmac does both. Writing to the root of `C:` or to `$Recycle.Bin` from an ordinary mstsc
@@ -103,10 +111,9 @@ Windows App are still to be tested (step 4).
 ## Testing
 
 ```sh
-cargo test -p rdpmac-session drives                # the file system, against a drive in memory
+cargo test -p rdpmac-session drives                # the file system against a drive in memory, the requests against IronRDP's channel
 cargo test -p rdpmac-session -- --ignored drives    # the same drive mounted through macOS's NFS client
-cargo test -p ironrdp-server --lib rdpdr            # in ../IronRDP: the channel
-cargo test -p ironrdp-testsuite-core --test integration_tests_core rdpdr   # in ../IronRDP: the PDUs
+cargo test -p ironrdp-testsuite-core --test integration_tests_core rdpdr   # in ../IronRDP: the channel and the PDUs
 ```
 
 End to end on one Mac: run rdpmacd with `--test-pattern`, then connect FreeRDP with

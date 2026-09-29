@@ -79,6 +79,14 @@ The same day, throwaway servers on that Mac showed:
    - in ironrdp-server, a processor, a handle whose requests each have a timeout, a builder method
      and a server event;
    - RDPDR sent after audio and video in each batch, so that file transfers do not drop sound.
+
+   Amended 2026-09-29: upstream IronRDP gained a server side of RDPDR of its own
+   (`ironrdp_rdpdr::server::RdpdrServer`) before this was offered, and the fork's `rdpmac/nla` was
+   merged with it. rdpmac uses upstream's, with six small commits in the fork that are also to be
+   offered upstream: the server sends User Logged On, without which clients announce no drives; the
+   backend learns each request's completion ID, each device's type and the result of a
+   set-information request; four more NTSTATUS codes get names; and RDPDR still goes after audio and
+   video. The requests to the client's files moved into rdpmac-session.
 6. Drives are named from the client's DeviceData, falling back to PreferredDosName, which FreeRDP
    cuts to eight characters. Devices other than drives are declined.
 7. A drive is mounted a few seconds after the session is up, and unmounted:
@@ -116,5 +124,5 @@ reasons above, and SMB through NetFS, which would need an SMB server written for
   it starts again.
 - Apps may ask once for permission to access files on a network volume, as they do for other network
   volumes. Step 4 confirms this.
-- The IronRDP fork carries about 460 more lines of patches, in commits of their own so that they can
-  go upstream.
+- The IronRDP fork carries about 45 more lines of patches to upstream's RDPDR server (about 460 before
+  the amendment of decision 5), in commits of their own so that they can go upstream.

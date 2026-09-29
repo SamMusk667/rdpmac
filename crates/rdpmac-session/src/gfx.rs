@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use ironrdp_dvc::encode_dvc_messages;
-use ironrdp_egfx::pdu::{Avc420Region, CapabilitiesAdvertisePdu, CapabilitySet};
+use ironrdp_egfx::pdu::{Avc420Region, CapabilitiesAdvertisePdu, CapabilitySet, Encoding};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics};
 use ironrdp_server::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle, ServerEvent, ServerEventSender};
 use ironrdp_svc::ChannelFlags;
@@ -567,8 +567,21 @@ impl GfxStream {
         let timestamp = self.started.elapsed().as_millis() as u32;
         let mut server = lock(handle);
         let queued = if avc444 {
-            let auxiliary = encoded.auxiliary.as_deref().map(|view| (view, &regions[..]));
-            server.send_avc444v2_frame(id, Some((&encoded.data, &regions)), auxiliary, timestamp)
+            // Luma in the first stream; chroma, when the encoder made it, in the second.
+            let (encoding, chroma_regions) = if encoded.auxiliary.is_some() {
+                (Encoding::LUMA_AND_CHROMA, Some(&regions[..]))
+            } else {
+                (Encoding::LUMA, None)
+            };
+            server.send_avc444v2_frame(
+                id,
+                encoding,
+                &encoded.data,
+                &regions,
+                encoded.auxiliary.as_deref(),
+                chroma_regions,
+                timestamp,
+            )
         } else {
             server.send_avc420_frame(id, &encoded.data, &regions, timestamp)
         };

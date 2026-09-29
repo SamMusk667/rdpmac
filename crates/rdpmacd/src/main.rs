@@ -16,7 +16,7 @@ use anyhow::{bail, Context};
 use clap::{CommandFactory, FromArgMatches};
 use ironrdp_server::sspi::credssp::CredentialsProxy;
 use ironrdp_server::sspi::AuthIdentity;
-use ironrdp_server::{CredentialValidator, RdpServer, TlsIdentityCtx};
+use ironrdp_server::{CredentialValidator, DesktopSize, RdpServer, TlsIdentityCtx};
 use rdpmac_auth::nla::{NlaLookup, StaticHash};
 use rdpmac_auth::{Lockout, StaticValidator};
 use rdpmac_session::display::{DisplayHandler, FrameSource, ResolutionMode};
@@ -354,9 +354,13 @@ async fn main() -> anyhow::Result<()> {
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
         .with_connection_handler(Some(Box::new(status::Connections(tracker.clone()))))
-        // Adopt the size the client asks for in its connection request instead of the display's;
+        // Adopt the size the client asks for in its connection request instead of the display's, up to
+        // the largest side a virtual display takes, which is also the protocol's;
         // DisplayHandler::request_initial_size then serves exactly that size.
-        .with_honor_client_desktop_size(mode == ResolutionMode::FollowClient)
+        .with_honor_client_desktop_size((mode == ResolutionMode::FollowClient).then_some(DesktopSize {
+            width: 8192,
+            height: 8192,
+        }))
         .with_cliprdr_factory((!args.no_clipboard).then(|| {
             Box::new(rdpmac_session::clipboard::ClipboardFactory::new())
                 as Box<dyn ironrdp_server::CliprdrServerFactory>

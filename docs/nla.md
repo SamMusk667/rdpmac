@@ -33,9 +33,9 @@ There are three gaps, and upstream master still has all three:
 
 ### IronRDP patch
 
-The patch is on branch `rdpmac/nla` of the IronRDP fork. It starts from 11a0810, the commit the
-ironrdp 0.13 crates on crates.io were published from, whose source is identical to what was
-published. rdpmac's `Cargo.toml` points all 17 ironrdp crates at a checkout of the fork in
+The patch is on branch `rdpmac/nla` of the IronRDP fork. It started from 11a0810, the commit the
+ironrdp 0.13 crates on crates.io were published from, and was merged with upstream's master of
+2026-09-29 (cdea64d0). rdpmac's `Cargo.toml` points all 18 ironrdp crates at a checkout of the fork in
 `../IronRDP` with `[patch.crates-io]`: if only acceptor and server pointed there, the sibling
 crates they depend on by path would exist twice, once from the checkout and once from crates.io,
 and the types would not match. The checkout locks sspi to 0.21.3, the same as rdpmac and upstream
@@ -56,9 +56,10 @@ second step:
   and that an unknown account is rejected. These three and the existing 17 all pass, and the
   changed crates have no new clippy warnings.
 
-The acceptor's CredSSP code on upstream master has not changed since 11a0810, so this part of the
-patch carries over as it is; server.rs has changed a lot and needs reworking against master.
-Upstream pull requests are still to be opened.
+In the merge with upstream's master, the acceptor part carried over as it was. The server part was
+reworked for master's connection handling, which can negotiate with a waiting client while another
+is served: the lookup is shared between connections and locked for each lookup only, so a client
+that stalls during CredSSP holds up no other. Upstream pull requests are still to be opened.
 
 ### Credential store
 

@@ -50,10 +50,11 @@ docs/                   Architecture decisions, milestones and design notes
 You need macOS 13 or later, Xcode or its command line tools (Swift 5.10, for the menu-bar app), and
 Rust 1.94 or newer.
 
-rdpmac builds IronRDP 0.13 with five patches that are not upstream yet: NLA against a credentials
-lookup, AVC444v2 frames from the server, sound timestamps and confirms, refreshing on Refresh Rect
-and Suppress Output, and clipboard errors that no longer end the session. They are on branch
-`rdpmac/nla` of an IronRDP fork, which `[patch.crates-io]` in Cargo.toml takes from `../IronRDP`:
+rdpmac builds IronRDP 0.13, as on upstream's master of 2026-09-29, with patches that are not upstream
+yet: NLA against a credentials lookup, refreshing on Refresh Rect and Suppress Output, how late the
+client plays each sound wave, and what drive redirection needs of IronRDP's RDPDR server. They are on
+branch `rdpmac/nla` of an IronRDP fork, which `[patch.crates-io]` in Cargo.toml takes from
+`../IronRDP`:
 
 ```sh
 git clone https://github.com/SamMusk667/rdpmac

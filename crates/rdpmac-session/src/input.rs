@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ironrdp_server::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
+use ironrdp_server::{KeyboardEvent, MouseButton as RdpButton, MouseEvent, RdpServerInputHandler};
 use ironrdp_pdu::input::fast_path::SynchronizeFlags;
 use screenio_core::{key_flags, lock_flags, Input, MouseButton};
 use tracing::{error, warn};
@@ -95,18 +95,14 @@ fn lock_bits(flags: SynchronizeFlags) -> u32 {
     bits
 }
 
-fn button_event(event: &MouseEvent) -> Option<(MouseButton, bool)> {
-    Some(match event {
-        MouseEvent::LeftPressed => (MouseButton::Left, true),
-        MouseEvent::LeftReleased => (MouseButton::Left, false),
-        MouseEvent::RightPressed => (MouseButton::Right, true),
-        MouseEvent::RightReleased => (MouseButton::Right, false),
-        MouseEvent::MiddlePressed => (MouseButton::Middle, true),
-        MouseEvent::MiddleReleased => (MouseButton::Middle, false),
-        MouseEvent::Button4Pressed => (MouseButton::X1, true),
-        MouseEvent::Button4Released => (MouseButton::X1, false),
-        MouseEvent::Button5Pressed => (MouseButton::X2, true),
-        MouseEvent::Button5Released => (MouseButton::X2, false),
+/// The button of the Mac's mouse that an RDP mouse button presses.
+fn screen_button(button: RdpButton) -> Option<MouseButton> {
+    Some(match button {
+        RdpButton::Left => MouseButton::Left,
+        RdpButton::Right => MouseButton::Right,
+        RdpButton::Middle => MouseButton::Middle,
+        RdpButton::X1 => MouseButton::X1,
+        RdpButton::X2 => MouseButton::X2,
         _ => return None,
     })
 }
@@ -171,16 +167,32 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
                 let (px, py) = current(&geometry).to_points(*x, *y);
                 input.mouse_move(px, py)
             }
+            Event::Mouse(MouseEvent::Button { x, y, button, pressed }) => match screen_button(*button) {
+                // The press or release happens where the event says, whether or not a move went first.
+                Some(button) => {
+                    let (px, py) = current(&geometry).to_points(*x, *y);
+                    input.mouse_move(px, py).and_then(|()| input.mouse_button(button, *pressed))
+                }
+                None => Ok(()),
+            },
+            Event::Mouse(MouseEvent::ButtonRel { x, y, button, pressed }) => match screen_button(*button) {
+                Some(button) => {
+                    let density = current(&geometry).pixels_per_point();
+                    let (dx, dy) = ((f64::from(*x) / density).round() as i32, (f64::from(*y) / density).round() as i32);
+                    let moved = if (dx, dy) == (0, 0) { Ok(()) } else { input.mouse_move_rel(dx, dy) };
+                    moved.and_then(|()| input.mouse_button(button, *pressed))
+                }
+                None => Ok(()),
+            },
             Event::Mouse(MouseEvent::VerticalScroll { value }) => input.mouse_wheel(0, i32::from(*value)),
+            Event::Mouse(MouseEvent::HorizontalScroll { value }) => input.mouse_wheel(i32::from(*value), 0),
             Event::Mouse(MouseEvent::Scroll { x, y }) => input.mouse_wheel(*x, *y),
             Event::Mouse(MouseEvent::RelMove { x, y }) => {
                 let density = current(&geometry).pixels_per_point();
                 input.mouse_move_rel((f64::from(*x) / density).round() as i32, (f64::from(*y) / density).round() as i32)
             }
-            Event::Mouse(other) => match button_event(other) {
-                Some((button, pressed)) => input.mouse_button(button, pressed),
-                None => Ok(()),
-            },
+            // Kinds of mouse event a later IronRDP adds.
+            Event::Mouse(_) => Ok(()),
         };
         if let Err(e) = result {
             warn!(%e, ?event, "input injection failed");

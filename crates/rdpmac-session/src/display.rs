@@ -14,10 +14,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use async_trait::async_trait;
 use ironrdp_displaycontrol::pdu::{DisplayControlMonitorLayout, MonitorLayoutEntry};
-use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
+use ironrdp_server::{
+    DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerError, ServerErrorExt as _, ServerResult,
+};
 use screenio_core::{
     cursor_position, cursor_shape, cursor_shape_id, list_displays, Capturer, DisplayInfo, Error as CaptureError,
 };
@@ -282,7 +283,7 @@ impl RdpServerDisplay for DisplayHandler {
         self.session.refresh_requested.store(true, Ordering::Release);
     }
 
-    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         let geometry = self.refresh();
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
         let stop = Arc::new(AtomicBool::new(false));
@@ -307,11 +308,11 @@ impl RdpServerDisplay for DisplayHandler {
                 FrameSource::Screen => frames.screen_loop(fps),
                 FrameSource::TestPattern { .. } => frames.pattern_loop(fps),
             })
-            .context("spawning the frame thread")?;
+            .map_err(|e| ServerError::io("spawning the frame thread", e))?;
         thread::Builder::new()
             .name("rdpmac-cursor".into())
             .spawn(move || cursor.cursor_loop(hz))
-            .context("spawning the cursor thread")?;
+            .map_err(|e| ServerError::io("spawning the cursor thread", e))?;
         info!(width = geometry.width, height = geometry.height, "session picture");
         Ok(Box::new(Updates {
             rx,
@@ -329,7 +330,7 @@ struct Updates {
 
 #[async_trait]
 impl RdpServerDisplayUpdates for Updates {
-    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         Ok(self.rx.recv().await)
     }
 }

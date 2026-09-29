@@ -28,6 +28,8 @@ ironrdp-svc = "0.8"
 ironrdp-cliprdr = "0.7"
 ironrdp-core = "0.2"
 ironrdp-rdpsnd = "0.9"
+# The PDUs of drive redirection (ADR-0003), which ironrdp-server runs but does not re-export.
+ironrdp-rdpdr = "0.7"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 async-trait = "0.1"
 anyhow = "1"
@@ -46,10 +48,12 @@ serde_json = "1"
 toml = "1"
 sha1 = "0.11"
 sha2 = "0.11"
+# Reading the server certificate's PEM file, for its thumbprints.
+rustls-pki-types = { version = "1", features = ["std"] }
 
-# NLA needs patched ironrdp-acceptor and ironrdp-server (docs/nla.md). The patch lives on branch rdpmac/nla
-# of a local IronRDP checkout, started from the commit the published crates were built from; every IronRDP
-# crate comes from there so their types stay one set.
+# NLA and drive redirection need patched IronRDP crates (docs/nla.md, docs/drives.md). The patches live on
+# branch rdpmac/nla of a local IronRDP checkout, merged with upstream's master; every IronRDP crate comes from
+# there so their types stay one set.
 [patch.crates-io]
 ironrdp-acceptor = { path = "../IronRDP/crates/ironrdp-acceptor" }
 ironrdp-ainput = { path = "../IronRDP/crates/ironrdp-ainput" }
@@ -64,6 +68,7 @@ ironrdp-egfx = { path = "../IronRDP/crates/ironrdp-egfx" }
 ironrdp-error = { path = "../IronRDP/crates/ironrdp-error" }
 ironrdp-graphics = { path = "../IronRDP/crates/ironrdp-graphics" }
 ironrdp-pdu = { path = "../IronRDP/crates/ironrdp-pdu" }
+ironrdp-rdpdr = { path = "../IronRDP/crates/ironrdp-rdpdr" }
 ironrdp-rdpsnd = { path = "../IronRDP/crates/ironrdp-rdpsnd" }
 ironrdp-server = { path = "../IronRDP/crates/ironrdp-server" }
 ironrdp-svc = { path = "../IronRDP/crates/ironrdp-svc" }

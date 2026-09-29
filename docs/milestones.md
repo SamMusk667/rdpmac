@@ -300,3 +300,9 @@ forward ahead of the list above, in the ADR's four steps:
 | 2 | Read-only drives: the hardened NFS server, the mounts and their life cycle, answers for macOS's own names | Done with FreeRDP (2026-09-29): 14 tests in rdpmac-session, one of them mounting through macOS's NFS client; end to end with sfreerdp on the same Mac, a 5 MiB read with equal SHA-256 in 0.05 s and 300 files listed in 0.06 s (docs/drives.md). mstsc still to test |
 | 3 | Writing, with macOS's own files kept on the Mac | Done with FreeRDP (2026-09-29): 18 tests in rdpmac-session and 10 of the channel; end to end with sfreerdp, a 5 MiB copy onto the drive with equal SHA-256 in 0.28 s, SQLite, renaming over a file, setting times, and no `._` or `.DS_Store` file on the client (docs/drives.md). mstsc still to test |
 | 4 | Finishing: the setting in the app, docs/drives.md, mstsc and Windows App, timeouts tuned on a slow link | Next |
+
+Later on 2026-09-29 the fork's `rdpmac/nla` was merged with upstream IronRDP's master, which has a
+server side of RDPDR of its own, and branch `rdpmac/rdpdr` was retired. rdpmac uses upstream's, with
+six small commits in the fork (ADR-0003, decision 5 as amended). The requests to the client's files
+moved into rdpmac-session, with 10 tests against IronRDP's channel, and the end-to-end results with
+sfreerdp did not change.

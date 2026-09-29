@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{ArgMatches, FromArgMatches};
-use ironrdp_server::tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use ironrdp_server::TlsIdentityCtx;
 use rdpmac_session::gfx::GfxLink;
 use rdpmac_session::virtual_screen::VirtualScreen;
 use rdpmac_session::SharedGeometry;
+use rustls_pki_types::{pem::PemObject, CertificateDer};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha1::Digest;

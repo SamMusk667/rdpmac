@@ -3,13 +3,14 @@
 //!
 //! [`DriveFactory`] gives IronRDP's RDPDR channel a [`DriveBackend`] for each connection. When the
 //! client announces a drive, the backend waits [`MOUNT_DELAY`], starts an NFSv3 server for it on a
-//! loopback port ([`fs::DriveFs`], which turns NFS calls into RDPDR requests) and mounts it as the
-//! user rdpmacd runs as. It unmounts the drive when the client stops sharing it or the connection
-//! ends, and stops serving it when the user ejects it in Finder. [`reap_stale_mounts`] removes what
-//! an rdpmacd that did not stop cleanly left mounted.
+//! loopback port ([`fs::DriveFs`], which turns NFS calls into RDPDR requests through
+//! [`rdpdr::RdpdrHandle`]) and mounts it as the user rdpmacd runs as. It unmounts the drive when the
+//! client stops sharing it or the connection ends, and stops serving it when the user ejects it in
+//! Finder. [`reap_stale_mounts`] removes what an rdpmacd that did not stop cleanly left mounted.
 
 mod fs;
 mod mount;
+mod rdpdr;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -17,13 +18,24 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use ironrdp_server::{AnnouncedDrive, RdpdrHandle, RdpdrServerFactory, RdpdrServerHandler};
+use ironrdp_core::impl_as_any;
+use ironrdp_pdu::PduResult;
+use ironrdp_rdpdr::pdu::efs::{
+    ClientDriveLockControlResponse, ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryInformationResponse, ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse,
+    ClientDriveSetInformationResponse, ClientDriveSetSecurityResponse, DeviceAnnounceHeader, DeviceCloseResponse,
+    DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceReadResponse, DeviceType,
+    DeviceWriteResponse,
+};
+use ironrdp_server::{RdpdrServerBackend, RdpdrServerFactory, ServerEvent, ServerEventSender};
 use nfsserve::tcp::{NFSTcp, NFSTcpListener};
+use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use self::fs::{ClientDrive, DriveFs};
 pub use self::mount::{default_root, reap_stale_mounts};
+use self::rdpdr::{Answer, RdpdrHandle, Requests};
 
 /// How long after the client announces a drive it is mounted. Clients announce their drives while
 /// the session starts, and a volume appearing then only competes with setting up the display.
@@ -35,27 +47,41 @@ const EJECT_POLL: Duration = Duration::from_secs(3);
 /// Builds a [`DriveBackend`] for each connection, mounting drives in `root`.
 pub struct DriveFactory {
     root: PathBuf,
+    /// The server's events, which carry the backends' requests to the connection.
+    sender: Option<mpsc::UnboundedSender<ServerEvent>>,
 }
 
 impl DriveFactory {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, sender: None }
+    }
+}
+
+impl ServerEventSender for DriveFactory {
+    fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>) {
+        self.sender = Some(sender);
     }
 }
 
 impl RdpdrServerFactory for DriveFactory {
-    fn build_backend(&self) -> Box<dyn RdpdrServerHandler> {
-        Box::new(DriveBackend::new(self.root.clone()))
+    fn build_backend(&self) -> Box<dyn RdpdrServerBackend> {
+        if self.sender.is_none() {
+            warn!("the RDPDR channel started before the server gave it its events; drives cannot be read");
+        }
+        Box::new(DriveBackend::new(self.root.clone(), self.sender.clone()))
     }
 }
 
 /// The drives of one connection. Dropping it, when the connection ends, unmounts them.
 pub struct DriveBackend {
     root: PathBuf,
-    handle: Option<RdpdrHandle>,
+    requests: Requests,
+    handle: RdpdrHandle,
     client_name: Option<String>,
     drives: HashMap<u32, Drive>,
 }
+
+impl_as_any!(DriveBackend);
 
 impl fmt::Debug for DriveBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -63,7 +89,7 @@ impl fmt::Debug for DriveBackend {
             .field("root", &self.root)
             .field("client_name", &self.client_name)
             .field("drives", &self.drives.keys().collect::<Vec<_>>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -84,57 +110,167 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl DriveBackend {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, sender: Option<mpsc::UnboundedSender<ServerEvent>>) -> Self {
+        let requests = Requests::new(sender);
         Self {
             root,
-            handle: None,
+            handle: RdpdrHandle::new(requests.clone()),
+            requests,
             client_name: None,
             drives: HashMap::new(),
         }
     }
+
+    /// Starts the task that mounts a drive the client shares, unless it is mounted already: clients
+    /// may announce a drive again.
+    fn mount(&mut self, device: &DeviceAnnounceHeader) {
+        let device_id = device.device_id();
+        if self.drives.contains_key(&device_id) {
+            return;
+        }
+        let name = rdpdr::drive_name(device);
+        info!(device_id, %name, "the client shares a drive");
+        let folder = mount::folder_name(&name, self.client_name.as_deref());
+        let serving = Arc::new(Mutex::new(None));
+        let remote = ClientDrive {
+            handle: self.handle.clone(),
+            device_id,
+        };
+        let task = tokio::spawn(serve(self.root.clone(), folder, remote, Arc::clone(&serving)));
+        self.drives.insert(device_id, Drive { task, serving });
+    }
 }
 
-impl RdpdrServerHandler for DriveBackend {
-    fn set_handle(&mut self, handle: RdpdrHandle) {
-        self.handle = Some(handle);
-    }
-
-    fn on_client_name(&mut self, name: &str) {
-        self.client_name = Some(name.to_owned());
-    }
-
-    fn on_drives_announced(&mut self, drives: &[AnnouncedDrive]) {
-        let Some(handle) = self.handle.clone() else {
-            warn!("drives announced before the RDPDR handle was set; ignoring them");
-            return;
-        };
-        for drive in drives {
-            // Clients may announce a drive again; it is mounted once.
-            if self.drives.contains_key(&drive.device_id) {
-                continue;
+impl RdpdrServerBackend for DriveBackend {
+    fn on_device_announce(&mut self, devices: &[DeviceAnnounceHeader]) -> Vec<(u32, bool)> {
+        let mut decisions = Vec::with_capacity(devices.len());
+        for device in devices {
+            let accepted = device.device_type() == DeviceType::Filesystem;
+            if accepted {
+                self.mount(device);
+            } else {
+                debug!(
+                    device_id = device.device_id(),
+                    device_type = ?device.device_type(),
+                    "declining a device that is not a drive"
+                );
             }
-            let folder = mount::folder_name(&drive.name, self.client_name.as_deref());
-            let serving = Arc::new(Mutex::new(None));
-            let remote = ClientDrive {
-                handle: handle.clone(),
-                device_id: drive.device_id,
-            };
-            let task = tokio::spawn(serve(self.root.clone(), folder, remote, Arc::clone(&serving)));
-            self.drives.insert(drive.device_id, Drive { task, serving });
+            decisions.push((device.device_id(), accepted));
         }
+        decisions
     }
 
-    fn on_drives_removed(&mut self, device_ids: &[u32]) {
+    fn on_device_remove(&mut self, device_ids: &[u32]) {
+        info!(?device_ids, "the client stops sharing devices");
         for device_id in device_ids {
+            // The client's handles went with the drive.
+            self.handle.forget_device(*device_id);
             if let Some(drive) = self.drives.remove(device_id) {
                 stop(drive);
             }
         }
     }
+
+    fn on_client_name(&mut self, computer_name: &str) {
+        self.client_name = Some(computer_name.to_owned());
+    }
+
+    fn on_request_sent(&mut self, completion_id: u32) {
+        self.requests.sent(completion_id);
+    }
+
+    fn on_create_complete(&mut self, response: &DeviceCreateResponse) -> PduResult<()> {
+        let answer = Answer::Create {
+            file_id: response.file_id,
+        };
+        self.requests.complete(&response.device_io_reply, answer);
+        Ok(())
+    }
+
+    fn on_close_complete(&mut self, response: &DeviceCloseResponse) -> PduResult<()> {
+        self.requests.complete(&response.device_io_response, Answer::Close);
+        Ok(())
+    }
+
+    fn on_read_complete(&mut self, response: &DeviceReadResponse) -> PduResult<()> {
+        let answer = Answer::Read {
+            data: response.read_data.clone(),
+        };
+        self.requests.complete(&response.device_io_reply, answer);
+        Ok(())
+    }
+
+    fn on_write_complete(&mut self, response: &DeviceWriteResponse) -> PduResult<()> {
+        let answer = Answer::Write {
+            length: response.length,
+        };
+        self.requests.complete(&response.device_io_reply, answer);
+        Ok(())
+    }
+
+    fn on_query_information_complete(&mut self, response: &ClientDriveQueryInformationResponse) -> PduResult<()> {
+        let answer = Answer::QueryInformation {
+            buffer: response.buffer.clone(),
+        };
+        self.requests.complete(&response.device_io_response, answer);
+        Ok(())
+    }
+
+    fn on_set_information_complete(&mut self, response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+        self.requests.complete(response.device_io_reply(), Answer::SetInformation);
+        Ok(())
+    }
+
+    fn on_query_directory_complete(&mut self, response: &ClientDriveQueryDirectoryResponse) -> PduResult<()> {
+        let answer = Answer::QueryDirectory {
+            buffer: response.buffer.clone(),
+        };
+        self.requests.complete(&response.device_io_reply, answer);
+        Ok(())
+    }
+
+    // Requests the drives never send.
+
+    fn on_flush_buffers_complete(&mut self, _response: &DeviceFlushBuffersResponse) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_device_control_complete(&mut self, _response: &DeviceControlResponse) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_notify_change_directory_complete(
+        &mut self,
+        _response: &ClientDriveNotifyChangeDirectoryResponse,
+    ) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_query_volume_information_complete(
+        &mut self,
+        _response: &ClientDriveQueryVolumeInformationResponse,
+    ) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_lock_control_complete(&mut self, _response: &ClientDriveLockControlResponse) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_query_security_complete(&mut self, _response: &ClientDriveQuerySecurityResponse) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn on_set_security_complete(&mut self, _response: &ClientDriveSetSecurityResponse) -> PduResult<()> {
+        Ok(())
+    }
 }
 
 impl Drop for DriveBackend {
     fn drop(&mut self) {
+        // The connection is over: whatever waits for the client never gets an answer, and the NFS
+        // calls that unmounting brings fail at once instead of waiting for the timeout.
+        self.requests.close();
         for (_, drive) in self.drives.drain() {
             stop(drive);
         }

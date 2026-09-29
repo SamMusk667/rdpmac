@@ -34,13 +34,15 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use ironrdp_server::{CreateMode, DirEntry, FileAttributes, FileInfo, NtStatus, RdpdrError, RdpdrHandle, RdpdrResult};
+use ironrdp_rdpdr::pdu::efs::{FileAttributes, NtStatus};
 use nfsserve::nfs::{
     fattr3, fileid3, filename3, ftype3, nfs_fh3, nfspath3, nfsstat3, nfstime3, sattr3, set_atime, set_mtime,
     set_size3, specdata3,
 };
 use nfsserve::vfs::{DirEntry as NfsDirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 use tracing::{debug, warn};
+
+use super::rdpdr::{CreateMode, DirEntry, FileInfo, RdpdrError, RdpdrHandle, RdpdrResult};
 
 /// The root directory's file ID.
 const ROOT_ID: fileid3 = 1;

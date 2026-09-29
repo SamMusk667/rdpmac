@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use ironrdp_server::{
     ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator, Credentials,
-    PostConnectionAction,
+    PostConnectionAction, ServerError,
 };
 use rdpmac_auth::bare_username;
 use serde::Serialize;
@@ -78,7 +78,7 @@ impl Tracker {
         }
     }
 
-    fn ended(&self, peer: SocketAddr, duration: Duration, error: Option<&anyhow::Error>) {
+    fn ended(&self, peer: SocketAddr, duration: Duration, error: Option<&ServerError>) {
         let mut state = self.lock();
         let user = state.current.take().and_then(|c| c.user);
         state.last = Some(Ended {
@@ -86,7 +86,8 @@ impl Tracker {
             user,
             ended: now(),
             seconds: duration.as_secs(),
-            error: error.map(|e| format!("{e:#}")),
+            // The error with its causes.
+            error: error.map(|e| e.report().to_string()),
         });
     }
 }
@@ -112,7 +113,7 @@ impl ConnectionHandler for Connections {
         &mut self,
         peer: SocketAddr,
         duration: Duration,
-        error: Option<&anyhow::Error>,
+        error: Option<&ServerError>,
     ) -> PostConnectionAction {
         self.0.ended(peer, duration, error);
         PostConnectionAction::Continue
@@ -144,6 +145,8 @@ impl CredentialValidator for Recorded {
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_server::ServerErrorExt as _;
+
     use super::*;
 
     #[test]
@@ -156,11 +159,11 @@ mod tests {
         let current = tracker.current().expect("connected");
         assert_eq!((current.peer, current.user.as_deref()), (peer, Some("alice")));
 
-        let error = anyhow::anyhow!("reset");
+        let error = ServerError::io("reading", std::io::Error::other("reset"));
         handler.on_disconnected(peer, Duration::from_secs(42), Some(&error));
         assert!(tracker.current().is_none());
         let last = tracker.last().expect("ended");
         assert_eq!((last.user.as_deref(), last.seconds), (Some("alice"), 42));
-        assert_eq!(last.error.as_deref(), Some("reset"));
+        assert_eq!(last.error.as_deref(), Some("[reading] I/O error, caused by: reset"));
     }
 }
