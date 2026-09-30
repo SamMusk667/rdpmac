@@ -929,7 +929,7 @@ mod tests {
         ClientDriveQueryInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest,
         ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DeviceCloseResponse, DeviceCreateResponse,
         DeviceIoRequest, DeviceReadResponse, DeviceWriteResponse, Devices, FileDirectoryInformation,
-        FileStandardInformation, Information, ServerDriveIoRequest, VersionAndIdPdu, VersionAndIdPduKind,
+        FileStandardInformation, Information, ServerDriveIoRequest, SharedAccess, VersionAndIdPdu, VersionAndIdPduKind,
     };
     use ironrdp_rdpdr::pdu::{RdpdrPdu, SharedHeader};
     use ironrdp_rdpdr::server::RdpdrServer;
@@ -1178,6 +1178,12 @@ mod tests {
         };
         assert_eq!(create.path, "\\docs\\a.txt");
         assert_eq!(create.create_disposition, CreateDisposition::FILE_OPEN);
+        // mstsc refuses any other share bit with STATUS_INVALID_PARAMETER, which macOS shows as
+        // error -50 on every file.
+        assert_eq!(
+            create.shared_access,
+            SharedAccess::FILE_SHARE_READ | SharedAccess::FILE_SHARE_WRITE | SharedAccess::FILE_SHARE_DELETE
+        );
         assert_eq!(requests.len(), 4, "open, two queries, close: {requests:?}");
         assert!(
             matches!(&requests[3], ServerDriveIoRequest::DeviceCloseRequest(c) if c.device_io_request.file_id == 5)

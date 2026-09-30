@@ -103,10 +103,14 @@ day: mounted after 3.3 s, a 5 MiB copy in 0.31 s, 300 files listed in 0.07 s.
 - **FreeRDP** answers a query about a file ID it does not know without the Length field. IronRDP's
   server cannot decode that answer and ends the connection, so rdpmac queries only handles it has
   just opened.
-- **mstsc and Windows App**: not yet tested with rdpmac. macrdp found that mstsc needs the Client ID
-  Confirm together with the capability request, and SYNCHRONIZE in the access rights of a file it
-  reads; rdpmac does both. Writing to the root of `C:` or to `$Recycle.Bin` from an ordinary mstsc
-  session is refused by Windows itself.
+- **mstsc** refuses to open a file whose share mode has bits other than read, write and delete, with
+  STATUS_INVALID_PARAMETER, which macOS shows as error -50. Folders still open, so the drive lists
+  but no file opens, reads or copies. IronRDP's server set all 32 bits (`SharedAccess::all()` of a
+  type that keeps unknown bits) until the fork fixed it on 2026-09-29, the day mstsc found it.
+- **mstsc and Windows App**: otherwise not yet tested with rdpmac. macrdp found that mstsc needs the
+  Client ID Confirm together with the capability request, and SYNCHRONIZE in the access rights of a
+  file it reads; rdpmac does both. Writing to the root of `C:` or to `$Recycle.Bin` from an ordinary
+  mstsc session is refused by Windows itself.
 
 ## Testing
 
