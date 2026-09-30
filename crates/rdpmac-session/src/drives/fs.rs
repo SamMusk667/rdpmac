@@ -158,7 +158,7 @@ pub(crate) fn nfs_error(error: &RdpdrError) -> nfsstat3 {
         // A timeout, a closed channel or an undecodable answer: nothing more precise to say.
         return nfsstat3::NFS3ERR_IO;
     };
-    match *status {
+    let nfs = match *status {
         NtStatus::NO_SUCH_FILE | NtStatus::OBJECT_NAME_NOT_FOUND | NtStatus::OBJECT_PATH_NOT_FOUND => {
             nfsstat3::NFS3ERR_NOENT
         }
@@ -177,7 +177,17 @@ pub(crate) fn nfs_error(error: &RdpdrError) -> nfsstat3 {
         // The client no longer shares the drive.
         NtStatus::NO_SUCH_DEVICE => nfsstat3::NFS3ERR_STALE,
         _ => nfsstat3::NFS3ERR_IO,
+    };
+    // The client refused a request as malformed or unsupported, or said something with no closer NFS
+    // error: macOS only shows error -50 or -36 for it, so the log keeps which request and status.
+    let unexpected = matches!(
+        *status,
+        NtStatus::INVALID_PARAMETER | NtStatus::NOT_SUPPORTED | NtStatus::NOT_IMPLEMENTED
+    ) || matches!(nfs, nfsstat3::NFS3ERR_IO);
+    if unexpected {
+        warn!(%error, "the client refused a drive request");
     }
+    nfs
 }
 
 /// Seconds between 1601-01-01 (FILETIME's epoch) and 1970-01-01.
