@@ -1,12 +1,42 @@
 #!/bin/sh
 # Runs as root once the installer has copied rdpmac.app. A running server restarts on the new
-# binary, and the app opens for the user at the screen so the welcome window can guide them.
+# binary, a running app quits, and the app opens again for its users and for the user at the
+# screen, where the welcome window can guide them.
+#
+# Users come from running processes and from scutil, not from the owner of /dev/console: macOS 27
+# can leave that to root while a user is logged in at the screen, and the server may run for a
+# user who is not at the screen at all.
 app="${2:-/Applications}/rdpmac.app"
-user=$(stat -f %Su /dev/console)
-[ -n "$user" ] && [ "$user" != "root" ] || exit 0
-uid=$(id -u "$user")
-if launchctl print "gui/$uid/com.rdpmac.rdpmacd" >/dev/null 2>&1; then
-    launchctl kickstart -k "gui/$uid/com.rdpmac.rdpmacd" || true
-fi
-launchctl asuser "$uid" sudo -u "$user" /usr/bin/open "$app" || true
+label=com.rdpmac.rdpmacd
+
+# The user IDs of the processes whose command line is the given executable of an rdpmac.app.
+uids_of() {
+    for pid in $(pgrep -f "/rdpmac\\.app/Contents/MacOS/$1\$"); do
+        ps -o uid= -p "$pid"
+    done | sort -u
+}
+
+# A kicked server restarts at once from the app now in place.
+for uid in $(uids_of rdpmacd); do
+    launchctl kickstart -k "gui/$uid/$label" || true
+done
+
+# A running app is the old one until it quits; opened again, it is the new one.
+app_uids=$(uids_of rdpmac)
+pkill -f '/rdpmac\.app/Contents/MacOS/rdpmac$' || true
+n=0
+while [ "$n" -lt 50 ] && pgrep -f '/rdpmac\.app/Contents/MacOS/rdpmac$' >/dev/null; do
+    sleep 0.1
+    n=$((n + 1))
+done
+
+console=$(printf 'show State:/Users/ConsoleUser\n' | /usr/sbin/scutil | awk '$1 == "Name" && $3 != "loginwindow" { print $3; exit }')
+console_uid=
+[ -n "$console" ] && console_uid=$(id -u "$console" 2>/dev/null)
+
+for uid in $(printf '%s\n' $app_uids $console_uid | sort -u); do
+    [ "$uid" -ne 0 ] 2>/dev/null || continue
+    user=$(id -un "$uid") || continue
+    launchctl asuser "$uid" sudo -u "$user" /usr/bin/open "$app" || true
+done
 exit 0
