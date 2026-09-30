@@ -25,7 +25,7 @@ use screenio_core::{
 use tokio::sync::mpsc::{self, error::TrySendError, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 
-use crate::cursor::{position_update, PointerCache};
+use crate::cursor::{position_update, ClientPointer, PointerCache};
 use crate::monitor::MonitorPolicy;
 use crate::pattern::TestPattern;
 use crate::virtual_screen::{StreamGuard, VirtualScreen};
@@ -140,6 +140,8 @@ pub struct DisplayHandler {
     virtual_screen: Option<Arc<VirtualScreen>>,
     /// IronRDP's flag for a client that asked for no picture.
     suppressed: Option<Arc<AtomicBool>>,
+    /// Where the client's input put the cursor, which the client needs no report of.
+    pointer: Arc<ClientPointer>,
 }
 
 impl DisplayHandler {
@@ -163,7 +165,15 @@ impl DisplayHandler {
             gfx: None,
             virtual_screen: None,
             suppressed: None,
+            pointer: Arc::new(ClientPointer::default()),
         }
+    }
+
+    /// Reports to the client only the cursor moves its own input, which the input handler records
+    /// in `pointer`, does not explain.
+    pub fn with_client_pointer(mut self, pointer: Arc<ClientPointer>) -> Self {
+        self.pointer = pointer;
+        self
     }
 
     /// Stops the picture while the client asks for none, as mstsc does while minimised, with
@@ -298,6 +308,7 @@ impl RdpServerDisplay for DisplayHandler {
             #[cfg(target_os = "macos")]
             gfx: self.gfx.clone(),
             suppressed: self.suppressed.clone(),
+            pointer: self.pointer.clone(),
         };
         let frames = producer(tx.clone());
         let cursor = producer(tx);
@@ -397,6 +408,7 @@ struct Producer {
     #[cfg(target_os = "macos")]
     gfx: Option<Arc<crate::gfx::GfxLink>>,
     suppressed: Option<Arc<AtomicBool>>,
+    pointer: Arc<ClientPointer>,
 }
 
 /// What the client asked of the picture: none at all (Suppress Output, which mstsc sends while
@@ -779,7 +791,10 @@ impl Producer {
                     let (x, y) = geometry.to_pixels(pos.x, pos.y);
                     if last_position != Some((x, y)) {
                         last_position = Some((x, y));
-                        if self.tx.blocking_send(position_update(x, y)).is_err() {
+                        // The client shows its pointer where its own input put it; told so again, a
+                        // moment late, it would pull the pointer back while the user moves it.
+                        let clients_own = self.pointer.explains((pos.x, pos.y));
+                        if !clients_own && self.tx.blocking_send(position_update(x, y)).is_err() {
                             return;
                         }
                     }

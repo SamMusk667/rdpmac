@@ -19,6 +19,7 @@ use ironrdp_server::sspi::AuthIdentity;
 use ironrdp_server::{CredentialValidator, DesktopSize, RdpServer, TlsIdentityCtx};
 use rdpmac_auth::nla::{NlaLookup, StaticHash};
 use rdpmac_auth::{Lockout, StaticValidator};
+use rdpmac_session::cursor::ClientPointer;
 use rdpmac_session::display::{DisplayHandler, FrameSource, ResolutionMode};
 use rdpmac_session::input::InputHandler;
 use rdpmac_session::monitor::{FixedMonitor, MonitorPolicy, PrimaryMonitor};
@@ -292,8 +293,12 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(?mode, "session resolution");
     let suppressed = Arc::new(AtomicBool::new(false));
+    // The input thread records where the client's moves put the cursor, and the cursor thread
+    // reports to the client only the moves those do not explain.
+    let client_pointer = Arc::new(ClientPointer::default());
     let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz)
-        .with_suppression(suppressed.clone());
+        .with_suppression(suppressed.clone())
+        .with_client_pointer(client_pointer.clone());
     // A display of its own only replaces the primary display; a chosen display is served as is.
     let own_display = args.virtual_display == VirtualDisplay::Auto
         && mode == ResolutionMode::FollowClient
@@ -323,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(codec = ?args.codec, "session codec");
     let status_geometry = geometry.clone();
-    let input_handler = InputHandler::spawn(geometry);
+    let input_handler = InputHandler::spawn(geometry, client_pointer);
     let tracker = Arc::new(status::Tracker::default());
     let (validator, lookup) = match args.security {
         Security::Tls => (validator(&args)?, None),

@@ -10,6 +10,7 @@
 //! every password down unchecked without it.
 
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,7 @@ const ACTIVITY_LAPSE: Duration = Duration::from_secs(20);
 /// or click it precedes arrives.
 const ACTIVITY_SETTLE: Duration = Duration::from_millis(200);
 
+use crate::cursor::ClientPointer;
 use crate::{current, SharedGeometry};
 
 #[derive(Debug)]
@@ -40,12 +42,13 @@ pub struct InputHandler {
 }
 
 impl InputHandler {
-    /// Starts the injection thread. Injection failures are logged, never fatal.
-    pub fn spawn(geometry: SharedGeometry) -> Self {
+    /// Starts the injection thread, which records in `pointer` where the client's moves put the
+    /// cursor. Injection failures are logged, never fatal.
+    pub fn spawn(geometry: SharedGeometry, pointer: Arc<ClientPointer>) -> Self {
         let (tx, rx) = mpsc::channel();
         if let Err(e) = thread::Builder::new()
             .name("rdpmac-input".into())
-            .spawn(move || inject_loop(rx, geometry))
+            .spawn(move || inject_loop(rx, geometry, pointer))
         {
             error!(%e, "input thread could not be started, input is disabled");
         }
@@ -135,7 +138,7 @@ impl Activity {
     }
 }
 
-fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
+fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry, pointer: Arc<ClientPointer>) {
     let mut input = match Input::open() {
         Ok(i) => i,
         Err(e) => {
@@ -165,12 +168,14 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
             Event::Key(_) => Ok(()),
             Event::Mouse(MouseEvent::Move { x, y }) => {
                 let (px, py) = current(&geometry).to_points(*x, *y);
+                pointer.moving_to((px, py));
                 input.mouse_move(px, py)
             }
             Event::Mouse(MouseEvent::Button { x, y, button, pressed }) => match screen_button(*button) {
                 // The press or release happens where the event says, whether or not a move went first.
                 Some(button) => {
                     let (px, py) = current(&geometry).to_points(*x, *y);
+                    pointer.moving_to((px, py));
                     input.mouse_move(px, py).and_then(|()| input.mouse_button(button, *pressed))
                 }
                 None => Ok(()),
@@ -179,7 +184,12 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
                 Some(button) => {
                     let density = current(&geometry).pixels_per_point();
                     let (dx, dy) = ((f64::from(*x) / density).round() as i32, (f64::from(*y) / density).round() as i32);
-                    let moved = if (dx, dy) == (0, 0) { Ok(()) } else { input.mouse_move_rel(dx, dy) };
+                    let moved = if (dx, dy) == (0, 0) {
+                        Ok(())
+                    } else {
+                        pointer.moving_by();
+                        input.mouse_move_rel(dx, dy)
+                    };
                     moved.and_then(|()| input.mouse_button(button, *pressed))
                 }
                 None => Ok(()),
@@ -189,6 +199,7 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry) {
             Event::Mouse(MouseEvent::Scroll { x, y }) => input.mouse_wheel(*x, *y),
             Event::Mouse(MouseEvent::RelMove { x, y }) => {
                 let density = current(&geometry).pixels_per_point();
+                pointer.moving_by();
                 input.mouse_move_rel((f64::from(*x) / density).round() as i32, (f64::from(*y) / density).round() as i32)
             }
             // Kinds of mouse event a later IronRDP adds.

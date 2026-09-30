@@ -1,5 +1,9 @@
 //! Cursor position and shape as RDP pointer updates.
 
+use std::collections::VecDeque;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 use ironrdp_server::{DisplayUpdate, RGBAPointer};
 use screenio_core::CursorShape;
@@ -11,6 +15,76 @@ const POINTER_MAX: u32 = 96;
 const CACHE_SLOTS: u16 = 20;
 /// Scale factors this close to 1 are sent as captured.
 const SCALE_TOLERANCE: f64 = 0.05;
+/// How long a move of the client's explains where the Mac's cursor is. The cursor thread looks
+/// several times in that while, and the input thread moves the cursor between its looks.
+const CLIENT_MOVE_MEMORY: Duration = Duration::from_millis(500);
+/// The most moves of the client's remembered; clients send at most a few hundred a second.
+const CLIENT_MOVES_KEPT: usize = 256;
+
+/// Where the client's own input put the Mac's cursor lately.
+///
+/// A client draws its pointer where its user moves it, and moves it again when the server reports
+/// a pointer position, as mstsc and Windows App do. Reporting every move the client made back to
+/// it, a moment late, pulls its pointer back to where it was while the user moves it: the mouse
+/// feels sticky, as if something else held it. So the cursor thread reports only positions the
+/// client's input does not explain, such as an app moving the cursor or someone at the Mac.
+#[derive(Debug, Default)]
+pub struct ClientPointer {
+    moves: Mutex<ClientMoves>,
+}
+
+#[derive(Debug, Default)]
+struct ClientMoves {
+    /// Points in global macOS coordinates, oldest first.
+    to: VecDeque<((i32, i32), Instant)>,
+    /// The last relative move; where it left the cursor is not known here.
+    relative: Option<Instant>,
+}
+
+impl ClientPointer {
+    fn moves(&self) -> MutexGuard<'_, ClientMoves> {
+        self.moves.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The client's input is about to put the cursor at `point`, in global points.
+    pub fn moving_to(&self, point: (i32, i32)) {
+        self.moving_to_at(point, Instant::now());
+    }
+
+    /// The client's input is about to move the cursor by a relative amount.
+    pub fn moving_by(&self) {
+        self.moves().relative = Some(Instant::now());
+    }
+
+    /// Whether the client's own input explains the cursor being at `point`, in global points.
+    pub fn explains(&self, point: (i32, i32)) -> bool {
+        self.explains_at(point, Instant::now())
+    }
+
+    fn moving_to_at(&self, point: (i32, i32), now: Instant) {
+        let mut moves = self.moves();
+        while moves.to.len() >= CLIENT_MOVES_KEPT
+            || moves
+                .to
+                .front()
+                .is_some_and(|(_, at)| now.duration_since(*at) > CLIENT_MOVE_MEMORY)
+        {
+            moves.to.pop_front();
+        }
+        moves.to.push_back((point, now));
+    }
+
+    fn explains_at(&self, point: (i32, i32), now: Instant) -> bool {
+        let recent = |at: &Instant| now.duration_since(*at) <= CLIENT_MOVE_MEMORY;
+        let moves = self.moves();
+        // Points are whole on both sides, but macOS may round a position the other way.
+        moves.relative.as_ref().is_some_and(recent)
+            || moves
+                .to
+                .iter()
+                .any(|((x, y), at)| recent(at) && (x - point.0).abs() <= 1 && (y - point.1).abs() <= 1)
+    }
+}
 
 #[derive(Default)]
 pub struct PointerCache {
@@ -120,6 +194,43 @@ fn resample(shape: &CursorShape, factor: f64) -> CursorShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_clients_own_moves_are_not_reported_back() {
+        let pointer = ClientPointer::default();
+        let start = Instant::now();
+        pointer.moving_to_at((100, 200), start);
+        pointer.moving_to_at((140, 210), start + Duration::from_millis(8));
+        let soon = start + Duration::from_millis(40);
+        // Where the client put the cursor, even a move ago, rounding aside.
+        assert!(pointer.explains_at((140, 210), soon));
+        assert!(pointer.explains_at((100, 200), soon));
+        assert!(pointer.explains_at((141, 209), soon));
+        // Somewhere else: an app moved the cursor, and the client has to know.
+        assert!(!pointer.explains_at((500, 300), soon));
+        // Later, the old moves explain nothing.
+        assert!(!pointer.explains_at((140, 210), start + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_relative_move_explains_any_position_for_a_while() {
+        let pointer = ClientPointer::default();
+        assert!(!pointer.explains((10, 10)));
+        pointer.moving_by();
+        assert!(pointer.explains((10, 10)));
+    }
+
+    #[test]
+    fn the_moves_kept_are_bounded() {
+        let pointer = ClientPointer::default();
+        let now = Instant::now();
+        for i in 0..1000 {
+            pointer.moving_to_at((i, i), now);
+        }
+        assert_eq!(pointer.moves().to.len(), CLIENT_MOVES_KEPT);
+        assert!(pointer.explains_at((999, 999), now));
+        assert!(!pointer.explains_at((0, 0), now));
+    }
 
     fn solid(width: u32, height: u32, rgba: [u8; 4], scale: f32) -> CursorShape {
         CursorShape {

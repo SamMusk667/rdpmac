@@ -202,9 +202,11 @@ Windows / macOS / Linux RDP clients
   set the pace of the next frame. When displays are reconfigured, libscreenio returns `Reset`, and
   the session sends `DisplayUpdate::Resize` and rebuilds the capturer.
 - **Cursor.** ScreenCaptureKit does not draw the cursor, so a cursor thread polls its position and
-  shape id: a change of position sends `PointerPosition`; a change of shape sends `RGBAPointer` or
-  `LargePointer` depending on the size, with a cache index kept per id; a hidden cursor sends
-  `HidePointer`.
+  shape id: a change of position sends `PointerPosition`, unless the client's own input put the
+  cursor there in the last half second (clients move their pointer to each position reported, so
+  echoing their own moves back, late, holds the pointer back while it moves); a change of shape
+  sends `RGBAPointer` or `LargePointer` depending on the size, with a cache index kept per id; a
+  hidden cursor sends `HidePointer`.
 - **Input.** `KeyboardEvent::Pressed{code, extended}` passes straight through to
   `key_scancode(code, EXTENDED)`, and `Released` adds `RELEASE`; `UnicodePressed(u16)` goes to
   `key_unicode` once surrogate pairs are combined; `Synchronize(flags)` goes to the new
@@ -398,3 +400,4 @@ Grouped by milestone; all are incremental:
 | 2026-09-24 | D8 step 2: 3840x2160 no longer falls back to scaling; a helper process switches to it explicitly once, and after macOS remembers it, it is available directly; based on a test showing that a switch made by hand holds and that later 4K sessions are 4K straight away, and on experiments with which process makes the switch |
 | 2026-09-24 | D4's credential store mode lands, see `docs/nla.md`: NT hashes kept in the login keychain, checked through PAM at enrollment, and the delegated password checked through PAM again; following section 6, the IronRDP patches are kept in the IronRDP fork (branch `rdpmac/nla`), checked out locally and referenced with `[patch.crates-io]`, and all ironrdp crates point at the checkout together so their types stay consistent |
 | 2026-09-27 | D6, and the Pro and commercial parts of sections 1, 2 (D2, D8), 4, 5, 6, 10 and 11, superseded by ADR-0002: MIT OR Apache-2.0, no Pro edition, libscreenio moved into this repository |
+| 2026-09-29 | Section 3, cursor: positions the client's own input explains are no longer sent back as `PointerPosition`; with mstsc the echo made the mouse feel sticky, as if held |
