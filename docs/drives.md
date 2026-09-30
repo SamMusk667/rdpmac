@@ -5,8 +5,9 @@ mounted on the Mac for the length of the session, at `~/RDP Drives/<drive> on <c
 `~/RDP Drives/C on DESKTOP-01`. They appear in Finder as network volumes, to read and write. ADR-0003
 records why they are mounted there and not in /Volumes, and the order of the work.
 
-State on 2026-09-29: reading and writing work with FreeRDP (steps 2 and 3 of ADR-0003). mstsc and
-Windows App are still to be tested (step 4).
+State on 2026-09-29: reading and writing work with FreeRDP (steps 2 and 3 of ADR-0003). With mstsc
+on a Windows PC, the user opened files on the shared `C:` and copied files (step 4, once the share
+mode was fixed). Windows App is still to be tested.
 
 ## How it works
 

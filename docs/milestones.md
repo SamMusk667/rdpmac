@@ -299,7 +299,7 @@ forward ahead of the list above, in the ADR's four steps:
 | 1 | Protocol: the server side of RDPDR in the IronRDP fork, with a unit test for every PDU | Done (2026-09-29): branch `rdpmac/rdpdr` of the fork; 16 PDU tests and 9 tests of the channel (handshake, drives accepted and other devices declined, removal, stat, listing, failure status, timeout, end of connection) |
 | 2 | Read-only drives: the hardened NFS server, the mounts and their life cycle, answers for macOS's own names | Done with FreeRDP (2026-09-29): 14 tests in rdpmac-session, one of them mounting through macOS's NFS client; end to end with sfreerdp on the same Mac, a 5 MiB read with equal SHA-256 in 0.05 s and 300 files listed in 0.06 s (docs/drives.md). mstsc still to test |
 | 3 | Writing, with macOS's own files kept on the Mac | Done with FreeRDP (2026-09-29): 18 tests in rdpmac-session and 10 of the channel; end to end with sfreerdp, a 5 MiB copy onto the drive with equal SHA-256 in 0.28 s, SQLite, renaming over a file, setting times, and no `._` or `.DS_Store` file on the client (docs/drives.md). mstsc still to test |
-| 4 | Finishing: the setting in the app, docs/drives.md, mstsc and Windows App, timeouts tuned on a slow link | Next |
+| 4 | Finishing: the setting in the app, docs/drives.md, mstsc and Windows App, timeouts tuned on a slow link | Under way: the setting and docs/drives.md are done; with mstsc, opening and copying files work (2026-09-29, after the share-mode fix); Windows App and a slow link still to test |
 
 Later on 2026-09-29 the fork's `rdpmac/nla` was merged with upstream IronRDP's master, which has a
 server side of RDPDR of its own, and branch `rdpmac/rdpdr` was retired. rdpmac uses upstream's, with
