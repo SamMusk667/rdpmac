@@ -16,7 +16,18 @@ use tracing::{debug, info, warn};
 ///   sound, which share the RDP connection with it.
 /// - `intr,deadtimeout=30`: when rdpmacd stops answering, programs using the drive get an error and
 ///   the mount goes away, instead of both hanging.
-const OPTIONS: &str = "locallocks,nfc,vers=3,tcp,rsize=262144,wsize=262144,readahead=4,actimeo=5,intr,deadtimeout=30";
+/// - `inet`: the server listens on 127.0.0.1 only. [`SERVER`] also resolves to ::1, where another
+///   process could listen on the same port and be tried when the mount reconnects.
+const OPTIONS: &str =
+    "locallocks,nfc,vers=3,tcp,inet,rsize=262144,wsize=262144,readahead=4,actimeo=5,intr,deadtimeout=30";
+
+/// The server every drive is mounted from, which Finder shows as the drives' server in its sidebar.
+/// Every name in the `.localhost` domain resolves to the loopback address (RFC 6761) without a
+/// change to the system; plain "localhost" said nothing about what the volumes are.
+const SERVER: &str = "RDP Volume.localhost";
+
+/// Servers the drives of earlier versions were mounted from, for [`reap_stale_mounts`].
+const OLD_SERVERS: [&str; 1] = ["localhost"];
 
 /// The folder the drives are mounted in: `~/RDP Drives`.
 pub fn default_root(home: &Path) -> PathBuf {
@@ -99,7 +110,7 @@ pub(crate) fn mount(port: u16, mountpoint: &Path, read_only: bool) -> io::Result
     let output = Command::new("/sbin/mount_nfs")
         .arg("-o")
         .arg(&options)
-        .arg("localhost:/")
+        .arg(format!("{SERVER}:/"))
         .arg(mountpoint)
         .output()?;
     if output.status.success() {
@@ -184,6 +195,13 @@ fn c_chars(chars: &[libc::c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Whether a mount's source is one that rdpmacd mounts drives from, now or in an earlier version.
+fn is_drive_source(from: &str) -> bool {
+    std::iter::once(SERVER)
+        .chain(OLD_SERVERS)
+        .any(|server| from.strip_prefix(server).is_some_and(|rest| rest.starts_with(':')))
+}
+
 pub(crate) fn is_mounted(path: &Path) -> bool {
     mounts().iter().any(|m| m.on == path)
 }
@@ -199,7 +217,7 @@ pub fn reap_stale_mounts(root: &Path) -> usize {
     let root = root.as_path();
     let mut reaped = 0;
     for stale in mounts() {
-        if stale.fs_type == "nfs" && stale.from.starts_with("localhost:") && stale.on.parent() == Some(root) {
+        if stale.fs_type == "nfs" && is_drive_source(&stale.from) && stale.on.parent() == Some(root) {
             let forced = Command::new("/sbin/umount")
                 .arg("-f")
                 .arg(&stale.on)
@@ -260,6 +278,23 @@ mod tests {
         assert_eq!(prepare(&root, "C on PC").unwrap(), resolved.join("C on PC 2"));
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn drives_of_this_and_earlier_versions_are_recognised() {
+        assert!(is_drive_source("RDP Volume.localhost:/"));
+        assert!(is_drive_source("localhost:/"));
+        assert!(!is_drive_source("localhost.example.com:/export"));
+        assert!(!is_drive_source("nas:/export"));
+        assert!(!is_drive_source("//user@localhost/share"));
+    }
+
+    #[test]
+    fn the_server_resolves_to_the_loopback_address() {
+        use std::net::ToSocketAddrs;
+        let addresses: Vec<_> = (SERVER, 0).to_socket_addrs().unwrap().map(|a| a.ip()).collect();
+        assert!(addresses.iter().any(|ip| ip.is_loopback() && ip.is_ipv4()), "{addresses:?}");
+        assert!(addresses.iter().all(|ip| ip.is_loopback()), "{addresses:?}");
     }
 
     #[test]

@@ -64,7 +64,9 @@ The same day, throwaway servers on that Mac showed:
    chooses. It is built on nfsserve and on macrdp's code, which ADR-0002 lets rdpmac take with its
    notices. It is mounted with
    `locallocks,nfc,vers=3,tcp,rsize=262144,wsize=262144,readahead=4,actimeo=5,intr,deadtimeout=30`;
-   the deadtimeout is to be tuned on a slow link.
+   the deadtimeout is to be tuned on a slow link. (Amended 2026-09-29: also `inet`, so that the
+   mount never tries ::1, and from the server `RDP Volume.localhost`, which Finder shows in place of
+   "localhost".)
 3. The NFS server accepts one MOUNT only. It puts a random 16-byte secret into every file handle and
    refuses handles without it, and it reports files as owned by the user, with modes 700 and 600.
    These are overrides of nfsserve's `path_to_id`, `id_to_fh` and `fh_to_id`, not changes to the

@@ -34,11 +34,15 @@ Windows App are still to be tested (step 4).
   Attributes carry the client's real times and sizes, which is how macOS notices a file changed on
   the client. A renamed file or folder keeps its NFS file ID, so a program that writes a temporary
   file and renames it over the original goes on using the handle it holds.
-- **Mount options.** `locallocks,nfc,vers=3,tcp,rsize=262144,wsize=262144,readahead=4,actimeo=5,intr,deadtimeout=30`.
+- **Mount options.** `locallocks,nfc,vers=3,tcp,inet,rsize=262144,wsize=262144,readahead=4,actimeo=5,intr,deadtimeout=30`.
   `locallocks`: without locks, SQLite reports a disk I/O error and flock fails. `nfc`: names reach
-  the client in composed form, as Windows writes them. The small transfer size keeps copies from
-  holding up the picture and the sound. `deadtimeout`: if rdpmacd stops answering, the mount goes
-  away by itself instead of hanging the programs that use it.
+  the client in composed form, as Windows writes them. `inet`: the server listens on 127.0.0.1
+  only, and the mount would otherwise also try ::1, where another process could listen. The small
+  transfer size keeps copies from holding up the picture and the sound. `deadtimeout`: if rdpmacd
+  stops answering, the mount goes away by itself instead of hanging the programs that use it.
+- **Server name.** Drives are mounted from `RDP Volume.localhost:/`, which Finder shows as their
+  server in its sidebar. Every name in the `.localhost` domain resolves to the loopback address
+  without a change to the system; a name without the suffix would need an entry in /etc/hosts.
 - **Who can reach a drive.** `~/RDP Drives` has mode 700; the home folder alone would let every
   account of the Mac in, since they all belong to its group. Files are reported as the user's, 700 and
   600; modes and owners set on the Mac are accepted and dropped, since Windows drives have neither.

@@ -390,6 +390,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(mount::is_mounted(&mountpoint));
+        // Finder shows the drives' server by this name.
+        let source = mount::mounts().into_iter().find(|m| m.on == mountpoint).unwrap().from;
+        assert_eq!(source, "RDP Volume.localhost:/");
 
         // File operations on the mount block until the server answers, and it runs on this thread.
         let mp = mountpoint.clone();
