@@ -21,8 +21,8 @@ releases yet: build it as described below.
 - **Macs without a screen.** Each session gets a virtual display of the client's pixel size, which
   becomes the desktop in place of macOS's placeholder display: native resolution, no scaling, Dock
   and menu bar included.
-- **Lock screen.** A locked Mac wakes when a session starts and takes the password typed in the
-  session, as it would from its own keyboard.
+- **Lock screen.** A locked Mac wakes when a session starts and unlocks with the password the
+  user logged on with, as Windows does (docs/unlock.md).
 - **Sign-in.** TLS with PAM, or Network Level Authentication against an NT hash kept in the login
   keychain; lockout after repeated failures (docs/nla.md).
 - **Clipboard.** Text, pictures, and files and folders, both ways (docs/clipboard.md).
@@ -158,11 +158,12 @@ and with dynamic resolution on, resizing the window changes it live.
 - With a screen attached, or when macOS refuses the requested size, ScreenCaptureKit scales the
   picture to the requested size, with black bars when the aspect ratios differ.
 - A locked Mac can be reached and unlocked. When a session starts, rdpmacd declares user activity
-  (as `caffeinate -u` does): the screen lights up, the lock screen appears, and the password typed
-  in the session unlocks it. rdpmacd also declares activity on remote input, at most every 2
-  seconds, because macOS does not count injected events as the user activity that starts the unlock
-  flow: without it the lock screen still shows the password field but turns every password down
-  unchecked.
+  (as `caffeinate -u` does): the screen lights up, the lock screen appears, and rdpmacd types the
+  password the user logged on with into it (docs/unlock.md). With `unlock = false`, or when that
+  does not work, the password typed in the session unlocks it. rdpmacd also declares activity on
+  remote input, at most every 2 seconds, because macOS does not count injected events as the user
+  activity that starts the unlock flow: without it the lock screen still shows the password field
+  but turns every password down unchecked.
 - `--resolution native` goes back to the display's own pixel size.
 
 On first run rdpmacd makes a self-signed TLS certificate in `~/Library/Application Support/rdpmac/`.
@@ -176,9 +177,9 @@ menu-bar app says so and offers a restart button.
 
 `~/Library/Application Support/rdpmac/config.toml` holds the settings, under the names of the
 command-line flags (`listen`, `auth`, `security`, `pam-service`, `allow-users`, `codec`,
-`parallel-conversion`, `clipboard`, `audio`, `drives`, `mute-mac`, `audio-rate`, `resolution`,
-`virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given on the command
-line win, and `--config` names another file. An unknown key or a value out of range stops the
+`parallel-conversion`, `clipboard`, `audio`, `drives`, `unlock`, `mute-mac`, `audio-rate`,
+`resolution`, `virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given on
+the command line win, and `--config` names another file. An unknown key or a value out of range stops the
 start, with the reason.
 
 `control.sock` in the same directory is the control socket of the menu-bar app. Only the same user

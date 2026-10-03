@@ -306,3 +306,11 @@ server side of RDPDR of its own, and branch `rdpmac/rdpdr` was retired. rdpmac u
 six small commits in the fork (ADR-0003, decision 5 as amended). The requests to the client's files
 moved into rdpmac-session, with 10 tests against IronRDP's channel, and the end-to-end results with
 sfreerdp did not change.
+
+## Unlocking the lock screen at logon (2026-10-03)
+
+When the Mac is locked, the password the user logged on with, just checked by PAM, is typed into
+the lock screen as the session starts, as Windows unlocks its console. It is on by default;
+`unlock = false` turns it off. The design, its safety checks and what it rests on are in
+docs/unlock.md. Unit tests cover the attempt against a scripted Mac. The lock-state checks were
+read on a locked Mac; a test with mstsc is still to come.

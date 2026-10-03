@@ -19,6 +19,7 @@ pub mod input;
 pub mod monitor;
 pub mod pattern;
 pub mod sound;
+pub mod unlock;
 pub mod virtual_screen;
 
 use std::sync::{Arc, Mutex};

@@ -28,6 +28,7 @@ use tracing::{debug, error, info, warn};
 use crate::cursor::{position_update, ClientPointer, PointerCache};
 use crate::monitor::MonitorPolicy;
 use crate::pattern::TestPattern;
+use crate::unlock::Unlocker;
 use crate::virtual_screen::{StreamGuard, VirtualScreen};
 use crate::{current, store, Geometry, Rect, SharedGeometry};
 
@@ -142,6 +143,8 @@ pub struct DisplayHandler {
     suppressed: Option<Arc<AtomicBool>>,
     /// Where the client's input put the cursor, which the client needs no report of.
     pointer: Arc<ClientPointer>,
+    /// Types the password of the user who logged on into the lock screen once the picture starts.
+    unlocker: Option<Arc<Unlocker>>,
 }
 
 impl DisplayHandler {
@@ -166,6 +169,7 @@ impl DisplayHandler {
             virtual_screen: None,
             suppressed: None,
             pointer: Arc::new(ClientPointer::default()),
+            unlocker: None,
         }
     }
 
@@ -173,6 +177,13 @@ impl DisplayHandler {
     /// in `pointer`, does not explain.
     pub fn with_client_pointer(mut self, pointer: Arc<ClientPointer>) -> Self {
         self.pointer = pointer;
+        self
+    }
+
+    /// Has the input thread type the password of the user who logged on into the lock screen
+    /// when the session's picture starts, after the display woke up for it.
+    pub fn with_unlocker(mut self, unlocker: Option<Arc<Unlocker>>) -> Self {
+        self.unlocker = unlocker;
         self
     }
 
@@ -325,6 +336,9 @@ impl RdpServerDisplay for DisplayHandler {
             .spawn(move || cursor.cursor_loop(hz))
             .map_err(|e| ServerError::io("spawning the cursor thread", e))?;
         info!(width = geometry.width, height = geometry.height, "session picture");
+        if let (Some(unlocker), FrameSource::Screen) = (&self.unlocker, self.source) {
+            unlocker.session_started();
+        }
         Ok(Box::new(Updates {
             rx,
             stop,

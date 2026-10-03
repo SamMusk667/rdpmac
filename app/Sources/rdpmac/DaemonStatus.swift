@@ -97,6 +97,7 @@ struct DaemonSettings: Codable, Equatable {
     var clipboard: Bool?
     var audio: Bool?
     var drives: Bool?
+    var unlock: Bool?
     var muteMac: Bool?
     /// Set by hand in the file; not shown, only kept when saving.
     var audioRate: Int?
@@ -110,7 +111,7 @@ struct DaemonSettings: Codable, Equatable {
     var h264Dump: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case listen, auth, security, codec, clipboard, audio, drives, resolution, fps, cert, key
+        case listen, auth, security, codec, clipboard, audio, drives, unlock, resolution, fps, cert, key
         case pamService = "pam-service"
         case allowUsers = "allow-users"
         case virtualDisplay = "virtual-display"

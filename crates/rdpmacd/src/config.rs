@@ -97,6 +97,10 @@ pub struct Args {
     #[arg(long)]
     pub no_drives: bool,
 
+    /// Do not type the password of the user who logs on into the Mac's lock screen.
+    #[arg(long)]
+    pub no_unlock: bool,
+
     /// Mute the Mac's own sound output while a client plays the sound, as Windows does.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub mute_mac: bool,

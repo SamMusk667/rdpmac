@@ -27,6 +27,7 @@ anyhow.workspace = true
 bytes.workspace = true
 nfsserve.workspace = true
 libc.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 # Paused time, for the timeout of drive requests.

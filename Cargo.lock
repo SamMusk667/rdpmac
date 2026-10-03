@@ -2792,6 +2792,7 @@ dependencies = [
  "screenio-core",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

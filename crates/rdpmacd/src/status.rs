@@ -12,6 +12,7 @@ use ironrdp_server::{
     PostConnectionAction, ServerError,
 };
 use rdpmac_auth::bare_username;
+use rdpmac_session::unlock::Unlocker;
 use serde::Serialize;
 use tracing::warn;
 
@@ -92,12 +93,16 @@ impl Tracker {
     }
 }
 
-/// Hands IronRDP's connection events to a [`Tracker`].
-pub struct Connections(pub Arc<Tracker>);
+/// Hands IronRDP's connection events to a [`Tracker`], and drops a password held for the lock
+/// screen that its session never used.
+pub struct Connections(pub Arc<Tracker>, pub Option<Arc<Unlocker>>);
 
 impl ConnectionHandler for Connections {
     fn on_accept(&mut self, peer: SocketAddr) -> bool {
         self.0.accepted(peer);
+        if let Some(unlocker) = &self.1 {
+            unlocker.forget();
+        }
         // macOS drops posted events silently, so injection itself never reports this.
         if !screenio_core::session_info().can_inject {
             warn!(
@@ -116,6 +121,9 @@ impl ConnectionHandler for Connections {
         error: Option<&ServerError>,
     ) -> PostConnectionAction {
         self.0.ended(peer, duration, error);
+        if let Some(unlocker) = &self.1 {
+            unlocker.forget();
+        }
         PostConnectionAction::Continue
     }
 }
@@ -152,7 +160,7 @@ mod tests {
     #[test]
     fn a_connection_moves_to_last_when_it_ends() {
         let tracker = Arc::new(Tracker::default());
-        let mut handler = Connections(tracker.clone());
+        let mut handler = Connections(tracker.clone(), None);
         let peer: SocketAddr = "192.0.2.7:50000".parse().expect("address");
         assert!(handler.on_accept(peer));
         tracker.authenticated("alice");

@@ -7,7 +7,8 @@
 //!
 //! The thread also declares the remote user active, which injected events alone do not do: a
 //! locked screen starts the flow that checks its password only for an active user, and turns
-//! every password down unchecked without it.
+//! every password down unchecked without it. And it types the password of the user who logged on
+//! into the lock screen (see [`crate::unlock`]), before any key the client sends after it.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 use ironrdp_server::{KeyboardEvent, MouseButton as RdpButton, MouseEvent, RdpServerInputHandler};
 use ironrdp_pdu::input::fast_path::SynchronizeFlags;
 use screenio_core::{key_flags, lock_flags, Input, MouseButton};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 /// How often remote input is declared as user activity.
 const ACTIVITY_EVERY: Duration = Duration::from_secs(2);
@@ -27,18 +28,36 @@ const ACTIVITY_LAPSE: Duration = Duration::from_secs(20);
 /// ...and the declaration takes this long to start it again (about 50 ms measured) before the key
 /// or click it precedes arrives.
 const ACTIVITY_SETTLE: Duration = Duration::from_millis(200);
+/// After a password went into the lock screen, the client's keys are dropped until it has typed
+/// none for this long...
+const SWALLOW_QUIET: Duration = Duration::from_secs(1);
+/// ...or for this long at most.
+const SWALLOW_AT_MOST: Duration = Duration::from_secs(10);
 
 use crate::cursor::ClientPointer;
+use crate::unlock::{self, Budget, MacDesk, Password};
 use crate::{current, SharedGeometry};
 
 #[derive(Debug)]
-enum Event {
+pub(crate) enum Event {
     Key(KeyboardEvent),
     Mouse(MouseEvent),
+    Unlock(Password),
 }
 
 pub struct InputHandler {
     tx: Sender<Event>,
+}
+
+/// Where other parts of the server hand the input thread work of its own.
+#[derive(Clone)]
+pub struct InputQueue(pub(crate) Sender<Event>);
+
+impl InputQueue {
+    /// Types `password` into the lock screen if the screen is locked.
+    pub(crate) fn unlock(&self, password: Password) {
+        let _ = self.0.send(Event::Unlock(password));
+    }
 }
 
 impl InputHandler {
@@ -53,6 +72,10 @@ impl InputHandler {
             error!(%e, "input thread could not be started, input is disabled");
         }
         Self { tx }
+    }
+
+    pub fn queue(&self) -> InputQueue {
+        InputQueue(self.tx.clone())
     }
 }
 
@@ -138,6 +161,58 @@ impl Activity {
     }
 }
 
+/// Drops the keys the client types while its password goes into the lock screen, and after
+/// that until it pauses: the user, seeing the lock screen, may be typing the password too, and
+/// once the screen unlocks the rest of it would land in an app, Return included.
+#[derive(Default)]
+struct Swallow {
+    /// Until when the next key is dropped, and the latest that can be.
+    window: Option<(Instant, Instant)>,
+    /// Keys whose press was dropped, so their release is too.
+    held: Vec<(u8, bool)>,
+    reported: bool,
+}
+
+impl Swallow {
+    fn start(&mut self, now: Instant) {
+        self.window = Some((now + SWALLOW_QUIET, now + SWALLOW_AT_MOST));
+        self.reported = false;
+    }
+
+    fn drops(&mut self, event: &KeyboardEvent, now: Instant) -> bool {
+        match *event {
+            KeyboardEvent::Pressed { .. } | KeyboardEvent::UnicodePressed(_) => {
+                let Some((quiet, at_most)) = self.window else {
+                    return false;
+                };
+                if now > quiet || now > at_most {
+                    self.window = None;
+                    return false;
+                }
+                self.window = Some(((now + SWALLOW_QUIET).min(at_most), at_most));
+                if let KeyboardEvent::Pressed { code, extended } = *event {
+                    if !self.held.contains(&(code, extended)) {
+                        self.held.push((code, extended));
+                    }
+                }
+                if !self.reported {
+                    info!("dropping the keys typed while the password went into the lock screen, until typing pauses");
+                    self.reported = true;
+                }
+                true
+            }
+            KeyboardEvent::Released { code, extended } => match self.held.iter().position(|k| *k == (code, extended)) {
+                Some(i) => {
+                    self.held.swap_remove(i);
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+}
+
 fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry, pointer: Arc<ClientPointer>) {
     let mut input = match Input::open() {
         Ok(i) => i,
@@ -148,9 +223,25 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry, pointer: Arc<Clien
     };
     let mut pending_surrogate = None;
     let mut activity = Activity::default();
+    // Shared by the sessions this server runs: a lock that turned the password down gets no more.
+    let mut budget = Budget::default();
+    let mut swallow = Swallow::default();
     for event in rx {
         activity.input();
+        if let Event::Key(key) = &event {
+            if swallow.drops(key, Instant::now()) {
+                continue;
+            }
+        }
         let result = match &event {
+            Event::Unlock(password) => {
+                let outcome = unlock::attempt(&mut MacDesk(&mut input), password.as_str(), &mut budget);
+                outcome.report();
+                if outcome.typed() {
+                    swallow.start(Instant::now());
+                }
+                Ok(())
+            }
             Event::Key(KeyboardEvent::Pressed { code, extended }) => {
                 input.key_scancode(u16::from(*code), if *extended { key_flags::EXTENDED } else { 0 })
             }
@@ -216,7 +307,36 @@ fn inject_loop(rx: Receiver<Event>, geometry: SharedGeometry, pointer: Arc<Clien
 
 #[cfg(test)]
 mod tests {
-    use super::utf16_unit;
+    use super::*;
+
+    #[test]
+    fn keys_typed_while_the_password_goes_in_are_dropped_until_typing_pauses() {
+        let press = |code| KeyboardEvent::Pressed { code, extended: false };
+        let release = |code| KeyboardEvent::Released { code, extended: false };
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut swallow = Swallow::default();
+        assert!(!swallow.drops(&press(0x1E), start), "nothing to drop before an attempt");
+        assert!(!swallow.drops(&release(0x1E), start));
+
+        swallow.start(start);
+        assert!(swallow.drops(&press(0x1E), at(0)));
+        assert!(swallow.drops(&release(0x1E), at(100)), "the release of a dropped key");
+        assert!(swallow.drops(&KeyboardEvent::UnicodePressed(0x61), at(900)));
+        assert!(swallow.drops(&press(0x1C), at(1800)), "Return, within a second of the last key");
+        assert!(!swallow.drops(&KeyboardEvent::Synchronize(SynchronizeFlags::empty()), at(1900)));
+        assert!(!swallow.drops(&press(0x1E), at(2900)), "a pause ends it");
+        assert!(swallow.drops(&release(0x1C), at(3000)), "Return's release goes with its press");
+        assert!(!swallow.drops(&release(0x1E), at(3000)), "a key let through is released too");
+
+        // Typing that never pauses is dropped for ten seconds at most.
+        swallow.start(start);
+        let mut ms = 0;
+        while swallow.drops(&press(0x1E), at(ms)) {
+            ms += 500;
+        }
+        assert_eq!(ms, 10_500);
+    }
 
     #[test]
     fn surrogate_pairs_are_joined() {

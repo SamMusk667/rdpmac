@@ -7,6 +7,7 @@ mod nla;
 mod settings;
 mod status;
 mod tls;
+mod unlock;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -296,9 +297,18 @@ async fn main() -> anyhow::Result<()> {
     // The input thread records where the client's moves put the cursor, and the cursor thread
     // reports to the client only the moves those do not explain.
     let client_pointer = Arc::new(ClientPointer::default());
+    let input_handler = InputHandler::spawn(geometry.clone(), client_pointer.clone());
+    // The password checked out against PAM for the user whose lock screen it goes into; a test
+    // pattern has no lock screen, and static credentials are not the Mac's password.
+    let unlocker = (args.auth == AuthMode::Pam && !args.no_unlock && args.test_pattern.is_none())
+        .then(|| Arc::new(rdpmac_session::unlock::Unlocker::new(input_handler.queue())));
+    if unlocker.is_some() {
+        info!("the password of the user who logs on goes into the lock screen when the Mac is locked");
+    }
     let display_handler = DisplayHandler::new(policy, geometry.clone(), source, mode, args.fps, args.cursor_hz)
         .with_suppression(suppressed.clone())
-        .with_client_pointer(client_pointer.clone());
+        .with_client_pointer(client_pointer.clone())
+        .with_unlocker(unlocker.clone());
     // A display of its own only replaces the primary display; a chosen display is served as is.
     let own_display = args.virtual_display == VirtualDisplay::Auto
         && mode == ResolutionMode::FollowClient
@@ -328,7 +338,6 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(codec = ?args.codec, "session codec");
     let status_geometry = geometry.clone();
-    let input_handler = InputHandler::spawn(geometry, client_pointer);
     let tracker = Arc::new(status::Tracker::default());
     let (validator, lookup) = match args.security {
         Security::Tls => (validator(&args)?, None),
@@ -339,6 +348,11 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(security = ?args.security, "client authentication");
     let validator: Arc<dyn CredentialValidator> = Arc::new(status::Recorded::new(validator, tracker.clone()));
+    #[cfg(target_os = "macos")]
+    let validator: Arc<dyn CredentialValidator> = match &unlocker {
+        Some(unlocker) => Arc::new(unlock::Remembered::new(validator, unlocker.clone())),
+        None => validator,
+    };
 
     // Drives an rdpmacd that stopped without unmounting them left in ~/RDP Drives (ADR-0003).
     let drives_root = directories::BaseDirs::new().map(|base| rdpmac_session::drives::default_root(base.home_dir()));
@@ -358,7 +372,7 @@ async fn main() -> anyhow::Result<()> {
         .with_input_handler(input_handler)
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
-        .with_connection_handler(Some(Box::new(status::Connections(tracker.clone()))))
+        .with_connection_handler(Some(Box::new(status::Connections(tracker.clone(), unlocker.clone()))))
         // Adopt the size the client asks for in its connection request instead of the display's, up to
         // the largest side a virtual display takes, which is also the protocol's;
         // DisplayHandler::request_initial_size then serves exactly that size.
