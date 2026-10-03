@@ -1,8 +1,8 @@
 //! Interface-only implementation for platforms that have no backend yet.
 
 use crate::{
-    AudioChunk, CursorPosition, CursorShape, DisplayInfo, Error, Frame, ModeSwitch, MouseButton,
-    PrivacyPane, Result, SessionInfo,
+    AudioChunk, CursorPosition, CursorShape, DisplayInfo, Error, Frame, Keystroke, ModeSwitch,
+    MouseButton, PrivacyPane, Result, ScreenLock, SessionInfo,
 };
 use std::time::Duration;
 
@@ -39,6 +39,14 @@ pub fn declare_user_activity() -> Result<()> {
 }
 
 pub fn wake_displays(_timeout: Duration) -> Result<bool> {
+    Err(Error::Unsupported)
+}
+
+pub fn screen_lock() -> Result<ScreenLock> {
+    Err(Error::Unsupported)
+}
+
+pub fn keystrokes(_text: &str) -> Result<Vec<Keystroke>> {
     Err(Error::Unsupported)
 }
 
@@ -154,6 +162,14 @@ impl Input {
     }
 
     pub fn sync_locks(&mut self, _flags: u32) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn locks(&self) -> Result<u32> {
+        Err(Error::Unsupported)
+    }
+
+    pub fn keystroke(&mut self, _keystroke: Keystroke) -> Result<()> {
         Err(Error::Unsupported)
     }
 

@@ -5,7 +5,7 @@
 //! keyboard would.
 
 use super::keymap;
-use crate::{key_flags, lock_flags, Error, MouseButton, Result};
+use crate::{key_flags, lock_flags, Error, Keystroke, MouseButton, Result};
 use core_graphics::{
     event::{
         CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton,
@@ -253,6 +253,28 @@ impl Input {
         }
         self.flags.set(CGEventFlags::CGEventFlagAlphaShift, wanted);
         Ok(())
+    }
+
+    pub fn locks(&self) -> Result<u32> {
+        Ok(if hid::caps_lock()? { lock_flags::CAPS } else { 0 })
+    }
+
+    pub fn keystroke(&mut self, keystroke: Keystroke) -> Result<()> {
+        let modifiers = [(keystroke.shift, KeyCode::SHIFT), (keystroke.option, KeyCode::OPTION)];
+        for &(held, key) in &modifiers {
+            if held {
+                self.post_key(key, true)?;
+            }
+        }
+        let typed = self
+            .post_key(keystroke.key, true)
+            .and_then(|()| self.post_key(keystroke.key, false));
+        for &(held, key) in modifiers.iter().rev() {
+            if held {
+                self.post_key(key, false)?;
+            }
+        }
+        typed
     }
 
     pub fn release_all(&mut self) -> Result<()> {

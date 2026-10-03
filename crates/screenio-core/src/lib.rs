@@ -260,6 +260,24 @@ pub fn wake_displays(timeout: Duration) -> Result<bool> {
     platform::wake_displays(timeout)
 }
 
+/// The screen lock of the session this process runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenLock {
+    pub locked: bool,
+    /// Tells one lock from the next: it changes each time the screen locks. `None` while the
+    /// screen is unlocked, or when the OS does not say.
+    pub lock_id: Option<i64>,
+    /// The lock screen's password field has the keyboard: the process that turned on secure
+    /// keyboard entry is the one that draws the lock screen (macOS: loginwindow).
+    pub password_field: bool,
+}
+
+/// Reads the state of the screen lock. An error means the state is unknown, never that the
+/// screen is unlocked.
+pub fn screen_lock() -> Result<ScreenLock> {
+    platform::screen_lock()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CursorPosition {
     pub x: i32,
@@ -324,6 +342,24 @@ pub mod lock_flags {
     pub const KANA: u32 = 8;
 }
 
+/// One key of the keyboard layout in use, pressed with Shift, Option or both to type one
+/// character. [`keystrokes`] makes them and [`Input::keystroke`] types them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keystroke {
+    /// The platform's key code (macOS: a virtual key code).
+    pub key: u16,
+    pub shift: bool,
+    /// Option on macOS, AltGr elsewhere.
+    pub option: bool,
+}
+
+/// The keystrokes that type `text` on the keyboard layout a password field takes, so that the
+/// characters come out right whatever the layout. [`Error::Invalid`] when a character needs a
+/// dead key, an input method or a key outside the main block; nothing is left out silently.
+pub fn keystrokes(text: &str) -> Result<Vec<Keystroke>> {
+    platform::keystrokes(text)
+}
+
 pub struct Input(platform::Input);
 
 impl Input {
@@ -363,6 +399,17 @@ impl Input {
     /// Platforms without a lock key (macOS has no Num Lock or Scroll Lock) ignore those bits.
     pub fn sync_locks(&mut self, flags: u32) -> Result<()> {
         self.0.sync_locks(flags)
+    }
+
+    /// The local lock keys that are on, as [`lock_flags`].
+    pub fn locks(&self) -> Result<u32> {
+        self.0.locks()
+    }
+
+    /// Presses and releases the key of `keystroke`, with Shift and Option held around it as a
+    /// typist holds them.
+    pub fn keystroke(&mut self, keystroke: Keystroke) -> Result<()> {
+        self.0.keystroke(keystroke)
     }
 
     /// Releases every key and button this handle still holds down; call on disconnect.

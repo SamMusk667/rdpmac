@@ -89,6 +89,14 @@ sh crates/screenio/examples/c/build.sh && ./crates/screenio/examples/c/screensho
   `caffeinate -u`; a remote desktop server calls it when a session starts and when remote input
   arrives. `wake_displays` (`sio_wake_displays`) declares activity and returns once a display has
   woken. Both were added in 1.1.
+* Screen lock, in the Rust interface only: `screen_lock` reads whether the session's screen is
+  locked, an ID that changes with every lock, and whether the lock screen's password field has the
+  keyboard (loginwindow turned secure keyboard entry on), from WindowServer's session dictionary.
+  An error means the state is unknown, never unlocked. `keystrokes` gives, for each character of a
+  text, the key of the current keyboard layout and the Shift and Option that type it, through
+  `UCKeyTranslate`; a character that needs a dead key or an input method is an error.
+  `Input::keystroke` types one, and `Input::locks` reads Caps Lock. Text Input Sources aborts the
+  process when two threads call it at once, so `keystrokes` takes a lock around it.
 * Sound: `AudioCapture` (C interface `sio_audio_*`) captures, through ScreenCaptureKit, the sound
   the Mac is playing (except this process's), in one or two channels, as interleaved 16-bit
   samples. 8000, 16000, 24000 and 48000 Hz are captured directly; ScreenCaptureKit supports only
