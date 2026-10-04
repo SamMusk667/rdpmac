@@ -183,53 +183,120 @@ struct SettingsView: View {
     @State private var enrollment: String?
     @State private var failure: String?
 
+    /// The groups scroll on a screen too short for them, such as a 1280x720 session, so that the
+    /// buttons stay on the screen.
+    private let groupsHeight = (NSScreen.main?.visibleFrame.height ?? 900) - 160
+
     var body: some View {
-        Form {
-            TextField("Listen on", text: $listen, prompt: Text("0.0.0.0:3389"))
-            Picker("Resolution", selection: $followClient) {
-                Text("Follow the client").tag(true)
-                Text("The display's own").tag(false)
+        VStack(spacing: 0) {
+            ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                SettingsGroup("Connection") {
+                    SettingsRow("Listen on") {
+                        TextField("Listen on", text: $listen, prompt: Text("0.0.0.0:3389"))
+                            .labelsHidden()
+                            .frame(width: 180)
+                    }
+                    Divider()
+                    SettingsRow("Require Network Level Authentication (NLA)") {
+                        Toggle("Require Network Level Authentication (NLA)", isOn: $nla).switchStyle()
+                    }
+                    .disabled(model.status?.nla == nil)
+                    if let account = model.status?.nla {
+                        Divider()
+                        nlaAccount(account)
+                    }
+                }
+                SettingsGroup("Lock Screen") {
+                    SettingsRow(
+                        "Unlock with the password used to log on",
+                        caption: "When the Mac is locked, the password \(NSUserName()) logs on with is typed into "
+                            + "the lock screen, so the session opens on the desktop."
+                    ) {
+                        Toggle("Unlock with the password used to log on", isOn: $unlock).switchStyle()
+                    }
+                    // Only a password PAM checked is the Mac's own.
+                    .disabled(model.status != nil && model.status?.nla == nil)
+                }
+                SettingsGroup(
+                    "Display",
+                    footer: codec != "remotefx" && initial?.h264 == true
+                        ? "The codec and the conversion apply from the next connection, without a restart." : nil
+                ) {
+                    SettingsRow("Resolution") {
+                        Picker("Resolution", selection: $followClient) {
+                            Text("Follow the client").tag(true)
+                            Text("The display's own").tag(false)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    Divider()
+                    SettingsRow("Virtual display when no screen is attached") {
+                        Toggle("Virtual display when no screen is attached", isOn: $ownDisplay).switchStyle()
+                    }
+                    .disabled(!followClient || model.status?.virtualDisplaysSupported == false)
+                    Divider()
+                    SettingsRow("Frame rate") {
+                        HStack(spacing: 6) {
+                            Text("\(fps) per second").monospacedDigit().foregroundStyle(.secondary)
+                            Stepper("Frame rate", value: $fps, in: 5...60, step: 5).labelsHidden()
+                        }
+                    }
+                    Divider()
+                    SettingsRow("Codec") {
+                        Picker("Codec", selection: $codec) {
+                            Text("H.264 in full colour (AVC444)").tag("auto")
+                            Text("H.264 (AVC420)").tag("avc420")
+                            Text("RemoteFX").tag("remotefx")
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    Divider()
+                    SettingsRow("Convert colours on several cores") {
+                        Toggle("Convert colours on several cores", isOn: $parallelConversion).switchStyle()
+                    }
+                    .disabled(codec != "auto")
+                }
+                SettingsGroup("Devices") {
+                    SettingsRow("Share the clipboard") {
+                        Toggle("Share the clipboard", isOn: $clipboard).switchStyle()
+                    }
+                    Divider()
+                    SettingsRow("Play the Mac's sound on the client") {
+                        Toggle("Play the Mac's sound on the client", isOn: $audio).switchStyle()
+                    }
+                    Divider()
+                    SettingsRow("Mute the Mac meanwhile") {
+                        Toggle("Mute the Mac meanwhile", isOn: $muteMac).switchStyle()
+                    }
+                    .disabled(!audio)
+                    Divider()
+                    SettingsRow("Mount the drives the client shares", caption: "In ~/RDP Drives, named like “C on DESKTOP-01”.") {
+                        Toggle("Mount the drives the client shares", isOn: $drives).switchStyle()
+                    }
+                }
             }
-            Toggle("Give sessions a display of their own when no screen is attached", isOn: $ownDisplay)
-                .disabled(!followClient || model.status?.virtualDisplaysSupported == false)
-            Picker("Codec", selection: $codec) {
-                Text("H.264 in full colour (AVC444)").tag("auto")
-                Text("H.264 (AVC420)").tag("avc420")
-                Text("RemoteFX").tag("remotefx")
+            .padding(20)
             }
-            Toggle("Convert colours on several cores", isOn: $parallelConversion)
-                .disabled(codec != "auto")
-            if codec != "remotefx", initial?.h264 == true {
-                Text("The codec and the conversion apply from the next connection, without a restart.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Toggle("Share the clipboard", isOn: $clipboard)
-            Toggle("Play the Mac's sound on the client", isOn: $audio)
-            Toggle("Mute the Mac meanwhile", isOn: $muteMac)
-                .disabled(!audio)
-            Toggle("Mount the drives the client shares in ~/RDP Drives", isOn: $drives)
-            Stepper("Frame rate: \(fps) per second", value: $fps, in: 5...60, step: 5)
-            Toggle("Type the password of the user who logs on into the lock screen", isOn: $unlock)
-            Toggle("Require Network Level Authentication (NLA)", isOn: $nla)
-                .disabled(model.status?.nla == nil)
-            if let account = model.status?.nla {
-                nlaAccount(account)
-            }
-            if let failure {
-                Text(failure).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                Spacer()
+            .frame(maxHeight: groupsHeight)
+            Divider()
+            HStack(spacing: 8) {
+                if let failure {
+                    Text(failure).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
                 Button("Cancel", action: close)
+                    .keyboardShortcut(.cancelAction)
                 Button(restarts ? "Save and Restart Server" : "Save", action: save)
                     .keyboardShortcut(.defaultAction)
                     .disabled(loaded == nil)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
         }
-        .padding(20)
-        .frame(width: 480)
+        .frame(width: 540)
         .onAppear(perform: load)
     }
 
@@ -311,43 +378,44 @@ extension SettingsView {
     /// for the enrolled user; it is derived from the Mac password, so enroll again after changing it.
     @ViewBuilder
     private func nlaAccount(_ account: DaemonStatus.Nla) -> some View {
-        if let error = account.error {
-            Text("The keychain could not be read: \(error)")
-                .foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-        } else if account.enrolled == true {
-            HStack {
-                Text(account.since.map {
-                    "\(account.user) enrolled on \(Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened))"
-                } ?? "\(account.user) is enrolled")
-                Spacer()
-                Button("Remove") { model.removeNla() }
+        VStack(alignment: .leading, spacing: 8) {
+            if let error = account.error {
+                Text("The keychain could not be read: \(error)")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if account.enrolled == true {
+                SettingsRow(
+                    account.since.map {
+                        "\(account.user) enrolled on \(Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened))"
+                    } ?? "\(account.user) is enrolled",
+                    caption: "Enroll again after changing the Mac password."
+                ) {
+                    Button("Remove") { model.removeNla() }
+                }
+            } else if account.stale == true {
+                Text("After the update the server cannot read \(account.user)'s enrollment, so NLA sign-ins fail. Enroll again with the Mac password.")
+                    .font(.callout)
+                    .foregroundStyle(nla ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(nla
+                     ? "Enroll \(account.user) with the Mac password, or nobody can sign in."
+                     : "To use NLA, enroll \(account.user) with the Mac password first.")
+                    .font(.callout)
+                    .foregroundStyle(nla ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Enroll again after changing the Mac password.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        } else if account.stale == true {
-            Text("After the update the server cannot read \(account.user)'s enrollment, so NLA sign-ins fail. Enroll again with the Mac password.")
-                .font(.callout)
-                .foregroundStyle(nla ? .orange : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            Text(nla
-                 ? "Enroll \(account.user) with the Mac password, or nobody can sign in."
-                 : "To use NLA, enroll \(account.user) with the Mac password first.")
-                .font(.callout)
-                .foregroundStyle(nla ? .orange : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                SecureField("Mac password", text: $password)
+                    .onSubmit(enroll)
+                Button(account.enrolled == true || account.stale == true ? "Enroll Again" : "Enroll", action: enroll)
+                    .disabled(password.isEmpty || enrolling)
+            }
+            if let enrollment {
+                Text(enrollment).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        HStack {
-            SecureField("Mac password", text: $password)
-                .onSubmit(enroll)
-            Button(account.enrolled == true || account.stale == true ? "Enroll Again" : "Enroll", action: enroll)
-                .disabled(password.isEmpty || enrolling)
-        }
-        if let enrollment {
-            Text(enrollment).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-        }
+        .padding(.vertical, 8)
     }
 
     private func enroll() {
@@ -361,6 +429,75 @@ extension SettingsView {
             }
             enrolling = false
         }
+    }
+}
+
+/// A titled box of settings rows, as System Settings groups them.
+private struct SettingsGroup<Content: View>: View {
+    let title: String
+    let footer: String?
+    let content: Content
+
+    init(_ title: String, footer: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.footer = footer
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            VStack(alignment: .leading, spacing: 0) {
+                content
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1)))
+            if let footer {
+                Text(footer)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+            }
+        }
+    }
+}
+
+/// A setting's name, with an optional explanation under it, and its control on the right.
+private struct SettingsRow<Control: View>: View {
+    let title: String
+    let caption: String?
+    let control: Control
+
+    init(_ title: String, caption: String? = nil, @ViewBuilder control: () -> Control) {
+        self.title = title
+        self.caption = caption
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fixedSize(horizontal: false, vertical: true)
+                if let caption {
+                    Text(caption)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+            control
+        }
+        .padding(.vertical, 7)
+    }
+}
+
+private extension Toggle {
+    /// A switch at the size System Settings uses, its name left to the row.
+    func switchStyle() -> some View {
+        labelsHidden().toggleStyle(.switch).controlSize(.small)
     }
 }
 
