@@ -45,10 +45,17 @@ fn init_logging() -> anyhow::Result<()> {
     use tracing_appender::rolling::{Builder, Rotation};
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::builder()
+    let mut filter = EnvFilter::builder()
         .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
         .with_env_var("RDPMAC_LOG")
         .from_env_lossy();
+    // IronRDP says only at debug whether a client's UDP tunnel came up, in a few lines a
+    // connection, and only when UDP is offered.
+    if std::env::var_os("RDPMAC_LOG").is_none() {
+        if let Ok(directive) = "ironrdp_server::multitransport=debug".parse() {
+            filter = filter.add_directive(directive);
+        }
+    }
     let registry = tracing_subscriber::registry().with(filter);
     match log_dir() {
         // Under launchd nothing reads stdout; keep two weeks of daily files instead.
@@ -368,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
         Security::Tls => server.with_tls(acceptor),
         Security::Nla => server.with_hybrid(acceptor, identity.pub_key.clone()),
     };
-    let mut server = server
+    let server = server
         .with_input_handler(input_handler)
         .with_display_handler(display_handler)
         .with_credential_validator(Some(validator))
@@ -401,8 +408,14 @@ async fn main() -> anyhow::Result<()> {
         .with_gfx_factory(gfx.clone().map(|link| {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
         }))
-        .with_display_suppressed_handle(suppressed)
-        .build();
+        .with_display_suppressed_handle(suppressed);
+    let server = if args.udp {
+        info!(listen = %args.listen, "offering RDP-UDP on the same port; the picture moves to it for clients that take it up");
+        server.with_udp_transport(args.listen)
+    } else {
+        server
+    };
+    let mut server = server.build();
     server.set_credentials_lookup(lookup);
     let control = Arc::new(control::Control {
         tracker,

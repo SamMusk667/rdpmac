@@ -101,6 +101,11 @@ pub struct Args {
     #[arg(long)]
     pub no_unlock: bool,
 
+    /// Offer clients RDP-UDP on the listening port: a client that takes it up, such as mstsc,
+    /// gets the picture over UDP, everything else over TCP (docs/udp.md).
+    #[arg(long)]
+    pub udp: bool,
+
     /// Mute the Mac's own sound output while a client plays the sound, as Windows does.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub mute_mac: bool,

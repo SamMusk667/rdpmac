@@ -42,6 +42,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unlock: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mute_mac: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_rate: Option<u32>,
@@ -159,6 +161,9 @@ impl Settings {
         if let (Some(v), true) = (self.unlock, unset("no_unlock")) {
             args.no_unlock = !v;
         }
+        if let (Some(v), true) = (self.udp, unset("udp")) {
+            args.udp = v;
+        }
         if let (Some(v), true) = (self.mute_mac, unset("mute_mac")) {
             args.mute_mac = v;
         }
@@ -215,6 +220,7 @@ impl Settings {
             audio: Some(!args.no_audio),
             drives: Some(!args.no_drives),
             unlock: Some(!args.no_unlock),
+            udp: Some(args.udp),
             mute_mac: Some(args.mute_mac),
             audio_rate: Some(args.audio_rate),
             resolution: Some(args.resolution),
@@ -285,6 +291,7 @@ mod tests {
         assert!(with(|s| s.audio = Some(false)), "the sound channel is offered from the start");
         assert!(with(|s| s.drives = Some(false)), "the drive channel is offered from the start");
         assert!(with(|s| s.unlock = Some(false)), "logons are wired up at start");
+        assert!(with(|s| s.udp = Some(true)), "the UDP offer is set up at start");
         assert!(with(|s| s.h264_dump = Some(true)), "recording is set up at start");
         assert!(with(|s| s.mute_mac = Some(false)), "the sound channel takes it at start");
         assert!(with(|s| s.allow_users = Some(vec!["admin".into()])), "logons are checked from the start");

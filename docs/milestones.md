@@ -314,3 +314,12 @@ the lock screen as the session starts, as Windows unlocks its console. It is on 
 `unlock = false` turns it off. The design, its safety checks and what it rests on are in
 docs/unlock.md. Unit tests cover the attempt against a scripted Mac. The lock-state checks were
 read on a locked Mac; a test with mstsc is still to come.
+
+## UDP (2026-10-05)
+
+The fork's branch `rdpmac/udp` merges upstream IronRDP master 38b074e4, which adds reliable UDP
+for servers (#1954). With `udp = true`, rdpmacd offers it on the listening port, and the picture
+moves onto the tunnel for clients that take it up, such as mstsc. It is off by default until a
+comparison with TCP shows a gain; macrdp measured none for the picture. Tested with FreeRDP, which
+declines, so the session stays on TCP; mstsc is still to test. docs/udp.md has the details and
+limits.

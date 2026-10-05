@@ -175,6 +175,7 @@ struct SettingsView: View {
     @State private var audio = true
     @State private var drives = true
     @State private var unlock = true
+    @State private var udp = false
     @State private var muteMac = true
     @State private var fps = 30
     @State private var nla = false
@@ -196,6 +197,13 @@ struct SettingsView: View {
                         TextField("Listen on", text: $listen, prompt: Text("0.0.0.0:3389"))
                             .labelsHidden()
                             .frame(width: 180)
+                    }
+                    Divider()
+                    SettingsRow(
+                        "Offer UDP",
+                        caption: "Clients that support it, such as mstsc, get the picture over UDP on the same port; others stay on TCP."
+                    ) {
+                        Toggle("Offer UDP", isOn: $udp).switchStyle()
                     }
                     Divider()
                     SettingsRow("Require Network Level Authentication (NLA)") {
@@ -314,6 +322,7 @@ struct SettingsView: View {
             audio = file.audio ?? effective?.audio ?? true
             drives = file.drives ?? effective?.drives ?? true
             unlock = file.unlock ?? effective?.unlock ?? true
+            udp = file.udp ?? effective?.udp ?? false
             muteMac = file.muteMac ?? effective?.muteMac ?? true
             fps = file.fps ?? effective?.fps ?? 30
             nla = (file.security ?? effective?.security ?? "tls") == "nla"
@@ -334,6 +343,7 @@ struct SettingsView: View {
         var audio: Bool
         var drives: Bool
         var unlock: Bool
+        var udp: Bool
         var muteMac: Bool
         var fps: Int
         var nla: Bool
@@ -341,7 +351,7 @@ struct SettingsView: View {
 
     private var choices: Choices {
         Choices(listen: listen, followClient: followClient, ownDisplay: ownDisplay, h264: codec != "remotefx",
-                clipboard: clipboard, audio: audio, drives: drives, unlock: unlock, muteMac: muteMac, fps: fps,
+                clipboard: clipboard, audio: audio, drives: drives, unlock: unlock, udp: udp, muteMac: muteMac, fps: fps,
                 nla: nla)
     }
 
@@ -361,6 +371,7 @@ struct SettingsView: View {
         settings.audio = audio
         settings.drives = drives
         settings.unlock = unlock
+        settings.udp = udp
         settings.muteMac = muteMac
         settings.fps = fps
         settings.security = nla ? "nla" : "tls"

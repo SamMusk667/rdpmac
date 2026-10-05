@@ -30,6 +30,8 @@ releases yet: build it as described below.
   muted (docs/audio.md).
 - **Drives.** The drives a client shares appear in `~/RDP Drives`, named like "C on DESKTOP-01",
   to read and write (docs/drives.md).
+- **UDP.** Optional: clients that support it, such as mstsc, get the picture over UDP on the same
+  port (docs/udp.md).
 - **Menu-bar app and installer.** A welcome window walks through the permissions; the menu shows the
   state and connections and has settings, certificate import, logs and a diagnostics bundle.
 
@@ -177,9 +179,9 @@ menu-bar app says so and offers a restart button.
 
 `~/Library/Application Support/rdpmac/config.toml` holds the settings, under the names of the
 command-line flags (`listen`, `auth`, `security`, `pam-service`, `allow-users`, `codec`,
-`parallel-conversion`, `clipboard`, `audio`, `drives`, `unlock`, `mute-mac`, `audio-rate`,
-`resolution`, `virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given on
-the command line win, and `--config` names another file. An unknown key or a value out of range stops the
+`parallel-conversion`, `clipboard`, `audio`, `drives`, `unlock`, `udp`, `mute-mac`, `audio-rate`,
+`resolution`, `virtual-display`, `fps`, `cursor-hz`, `cert`, `key` and `h264-dump`). Values given
+on the command line win, and `--config` names another file. An unknown key or a value out of range stops the
 start, with the reason.
 
 `control.sock` in the same directory is the control socket of the menu-bar app. Only the same user
