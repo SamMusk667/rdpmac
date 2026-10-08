@@ -16,6 +16,9 @@ struct DaemonStatus: Decodable {
         let peer: String
         let since: TimeInterval
         let user: String?
+        /// Came back with its auto-reconnect cookie after its connection dropped; absent from
+        /// servers before 0.5.0.
+        let reconnected: Bool?
     }
 
     struct Ended: Decodable {

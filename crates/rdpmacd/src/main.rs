@@ -9,15 +9,18 @@ mod status;
 mod tls;
 mod unlock;
 
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use clap::{CommandFactory, FromArgMatches};
 use ironrdp_server::sspi::credssp::CredentialsProxy;
 use ironrdp_server::sspi::AuthIdentity;
-use ironrdp_server::{CredentialValidator, DesktopSize, RdpServer, TlsIdentityCtx};
+use ironrdp_server::heartbeat::HeartbeatConfig;
+use ironrdp_server::{CredentialValidator, DesktopSize, RdpServer, ServerAutoReconnect, TlsIdentityCtx};
 use rdpmac_auth::nla::{NlaLookup, StaticHash};
 use rdpmac_auth::{Lockout, StaticValidator};
 use rdpmac_session::cursor::ClientPointer;
@@ -38,6 +41,25 @@ fn log_dir() -> Option<PathBuf> {
         Some(rest) => directories::BaseDirs::new().map(|base| base.home_dir().join(rest)),
         None => Some(PathBuf::from(dir)),
     }
+}
+
+/// How long a client may stop answering before its connection is dropped. A client whose network
+/// went away sends nothing, and until its connection is gone the server serves no other, not even
+/// the same client reconnecting. Heartbeats make mstsc reconnect after about 40 seconds of silence,
+/// so the dead connection is gone by then.
+const DEAD_PEER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The cookie that lets a client whose connection dropped reconnect without signing in again.
+/// IronRDP gives every later client a fresh random, and hourly updates.
+fn auto_reconnect_cookie() -> anyhow::Result<ServerAutoReconnect> {
+    let mut random_bits = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut random_bits))
+        .context("reading /dev/urandom for the auto-reconnect cookie")?;
+    // The session is the console session of the user rdpmacd runs as.
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let logon_id = unsafe { libc::geteuid() };
+    Ok(ServerAutoReconnect { logon_id, random_bits })
 }
 
 fn init_logging() -> anyhow::Result<()> {
@@ -408,7 +430,9 @@ async fn main() -> anyhow::Result<()> {
         .with_gfx_factory(gfx.clone().map(|link| {
             Box::new(rdpmac_session::gfx::GfxFactory::new(link)) as Box<dyn ironrdp_server::GfxServerFactory>
         }))
-        .with_display_suppressed_handle(suppressed);
+        .with_display_suppressed_handle(suppressed)
+        .with_auto_reconnect_cookie(Some(auto_reconnect_cookie()?))
+        .with_dead_peer_timeout(Some(DEAD_PEER_TIMEOUT));
     let server = if args.udp {
         info!(listen = %args.listen, "offering RDP-UDP on the same port; the picture moves to it for clients that take it up");
         server.with_udp_transport(args.listen)
@@ -416,6 +440,8 @@ async fn main() -> anyhow::Result<()> {
         server
     };
     let mut server = server.build();
+    // Lets mstsc notice a link gone silent and reconnect, instead of waiting on TCP.
+    server.enable_heartbeat(HeartbeatConfig::default());
     server.set_credentials_lookup(lookup);
     let control = Arc::new(control::Control {
         tracker,

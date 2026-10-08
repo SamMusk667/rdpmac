@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use ironrdp_server::{
-    ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator, Credentials,
-    PostConnectionAction, ServerError,
+    ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError, CredentialValidator,
+    Credentials, PostConnectionAction, ServerError,
 };
 use rdpmac_auth::bare_username;
 use rdpmac_session::unlock::Unlocker;
@@ -30,6 +30,8 @@ pub struct Connection {
     pub since: u64,
     /// Set once the credentials passed.
     pub user: Option<String>,
+    /// Came back with its auto-reconnect cookie after its connection dropped.
+    pub reconnected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,12 +72,26 @@ impl Tracker {
             peer,
             since: now(),
             user: None,
+            reconnected: false,
         });
     }
 
     fn authenticated(&self, user: &str) {
         if let Some(connection) = self.lock().current.as_mut() {
             connection.user = Some(user.to_owned());
+        }
+    }
+
+    /// The connection is set up. One whose credentials were not checked came back with its
+    /// auto-reconnect cookie, which only the client of the session before it holds.
+    fn established(&self) {
+        let mut state = self.lock();
+        let previous = state.last.as_ref().and_then(|last| last.user.clone());
+        if let Some(connection) = state.current.as_mut() {
+            if connection.user.is_none() {
+                connection.user = previous;
+                connection.reconnected = true;
+            }
         }
     }
 
@@ -112,6 +128,10 @@ impl ConnectionHandler for Connections {
             );
         }
         true
+    }
+
+    fn on_connection_info(&mut self, _info: &ConnectionInfo) {
+        self.0.established();
     }
 
     fn on_disconnected(
@@ -173,5 +193,24 @@ mod tests {
         let last = tracker.last().expect("ended");
         assert_eq!((last.user.as_deref(), last.seconds), (Some("alice"), 42));
         assert_eq!(last.error.as_deref(), Some("[reading] I/O error, caused by: reset"));
+    }
+
+    #[test]
+    fn a_reconnection_keeps_the_user_of_the_connection_it_replaces() {
+        let tracker = Arc::new(Tracker::default());
+        let mut handler = Connections(tracker.clone(), None);
+        let peer: SocketAddr = "192.0.2.7:50000".parse().expect("address");
+        assert!(handler.on_accept(peer));
+        tracker.authenticated("alice");
+        tracker.established();
+        assert!(!tracker.current().expect("connected").reconnected, "signed in");
+        handler.on_disconnected(peer, Duration::from_secs(600), None);
+
+        // Back from a new address with its cookie: no credentials were checked.
+        let back: SocketAddr = "198.51.100.4:50123".parse().expect("address");
+        assert!(handler.on_accept(back));
+        tracker.established();
+        let current = tracker.current().expect("connected");
+        assert_eq!((current.user.as_deref(), current.reconnected), (Some("alice"), true));
     }
 }

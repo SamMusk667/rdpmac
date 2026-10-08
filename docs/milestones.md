@@ -323,3 +323,12 @@ moves onto the tunnel for clients that take it up, such as mstsc. It is off by d
 comparison with TCP shows a gain; macrdp measured none for the picture. Tested with FreeRDP, which
 declines, so the session stays on TCP; mstsc is still to test. docs/udp.md has the details and
 limits.
+
+## Reconnecting (2026-10-08)
+
+The first of the weak-network items. rdpmacd hands clients an auto-reconnect cookie, sends
+heartbeats so that a client notices a silent link, and drops a connection whose client has
+acknowledged nothing for 30 seconds (`with_dead_peer_timeout`, a patch in the IronRDP fork), so
+that the reconnecting client is served. Tested with FreeRDP: the right cookie gets in without the
+password, an altered one is turned away. A real drop with mstsc is still to test.
+docs/reconnect.md has the details.

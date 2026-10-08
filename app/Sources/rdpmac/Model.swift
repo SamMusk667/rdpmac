@@ -53,7 +53,8 @@ final class Model: ObservableObject {
         let host = connection.peer.split(separator: ":").dropLast().joined(separator: ":")
         let since = Date(timeIntervalSince1970: connection.since).formatted(date: .omitted, time: .shortened)
         let size = status?.sessionSize.map { " at \($0[0])x\($0[1])" } ?? ""
-        return "\(connection.user ?? "Signing in") from \(host) since \(since)\(size)"
+        let again = connection.reconnected == true ? ", reconnected" : ""
+        return "\(connection.user ?? "Signing in") from \(host) since \(since)\(size)\(again)"
     }
 
     func start() {

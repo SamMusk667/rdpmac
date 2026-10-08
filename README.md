@@ -32,6 +32,8 @@ releases yet: build it as described below.
   to read and write (docs/drives.md).
 - **UDP.** Optional: clients that support it, such as mstsc, get the picture over UDP on the same
   port (docs/udp.md).
+- **Reconnecting.** When the network drops, the client reconnects to the same session by itself,
+  without the password (docs/reconnect.md).
 - **Menu-bar app and installer.** A welcome window walks through the permissions; the menu shows the
   state and connections and has settings, certificate import, logs and a diagnostics bundle.
 
