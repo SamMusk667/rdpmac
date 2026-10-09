@@ -66,7 +66,7 @@ pub struct GfxLink {
     sender: Mutex<Option<UnboundedSender<ServerEvent>>>,
     options: Mutex<GfxOptions>,
     /// The log directory, when every stream is recorded under it.
-    dump_to: Option<PathBuf>,
+    dump_to: Mutex<Option<PathBuf>>,
     /// The current stream's recording.
     dump: Mutex<Option<Dump>>,
 }
@@ -78,13 +78,29 @@ impl GfxLink {
             handle: Mutex::new(None),
             sender: Mutex::new(None),
             options: Mutex::new(options),
-            dump_to,
+            dump_to: Mutex::new(dump_to),
             dump: Mutex::new(None),
         })
     }
 
     pub fn set_options(&self, options: GfxOptions) {
         *lock(&self.options) = options;
+    }
+
+    /// Records the streams of later encoders under the log directory `dump_to`, or nothing when
+    /// it is `None`, which also ends the current recording at once.
+    pub fn record_to(&self, dump_to: Option<PathBuf>) {
+        // Held throughout, as `start_recording` holds it, so that no recording starts after this.
+        let mut to = lock(&self.dump_to);
+        match (&*to, &dump_to) {
+            (None, Some(logs)) => warn!(dir = %logs.join("h264").display(), "recording the H.264 streams from the next connection on"),
+            (Some(_), None) => {
+                *lock(&self.dump) = None;
+                info!("no longer recording the H.264 streams");
+            }
+            _ => {}
+        }
+        *to = dump_to;
     }
 
     /// Adds to the current stream's recording, if one is being made; a failure ends it.
@@ -500,7 +516,8 @@ impl GfxStream {
     /// Records the stream from a new encoder on, in a directory of its own, when streams are
     /// recorded.
     fn start_recording(&self, width: u32, height: u32, avc444: bool) {
-        let Some(logs) = &self.link.dump_to else {
+        let dump_to = lock(&self.link.dump_to);
+        let Some(logs) = dump_to.as_deref() else {
             return;
         };
         let started = Dump::start(logs, width, height, if avc444 { "avc444" } else { "avc420" });
@@ -654,5 +671,25 @@ mod tests {
         assert!(video.still_for(last + Duration::from_millis(500)) < STILL_AFTER);
         assert!(video.still_for(last + STILL_AFTER) >= STILL_AFTER);
         assert_eq!(Motion::default().still_for(t0), Duration::MAX);
+    }
+
+    #[test]
+    fn turning_the_recording_off_ends_the_current_one_at_once() {
+        let logs = std::env::temp_dir().join(format!("rdpmac-record-to-test-{}", std::process::id()));
+        let options = GfxOptions {
+            avc444: true,
+            parallel_conversion: true,
+        };
+        let link = GfxLink::new(options, Some(logs.clone()));
+        *lock(&link.dump) = Some(Dump::start(&logs, 640, 480, "avc420").expect("start"));
+
+        link.record_to(None);
+        assert!(lock(&link.dump).is_none(), "the recording ends");
+        assert!(lock(&link.dump_to).is_none(), "and no new one starts");
+
+        link.record_to(Some(logs.clone()));
+        assert!(lock(&link.dump).is_none(), "the next stream starts the next recording");
+        assert_eq!(lock(&link.dump_to).as_deref(), Some(logs.as_path()));
+        std::fs::remove_dir_all(&logs).expect("clean up");
     }
 }

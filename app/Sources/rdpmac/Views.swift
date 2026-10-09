@@ -178,6 +178,9 @@ struct SettingsView: View {
     @State private var udp = false
     @State private var muteMac = true
     @State private var fps = 30
+    @State private var record = false
+    /// What the recordings in the log directory take up, when there are any.
+    @State private var recordings: Int64?
     @State private var nla = false
     @State private var password = ""
     @State private var enrolling = false
@@ -285,6 +288,24 @@ struct SettingsView: View {
                         Toggle("Mount the drives the client shares", isOn: $drives).switchStyle()
                     }
                 }
+                SettingsGroup("Debugging") {
+                    SettingsRow(
+                        "Record the picture stream",
+                        caption: "Records every H.264 stream as sent, with the client's replies, to find out why a "
+                            + "client showed a wrong picture. Keeps up to about 3 GB. Starts with the next "
+                            + "connection; stops at once when turned off."
+                    ) {
+                        Toggle("Record the picture stream", isOn: $record).switchStyle()
+                    }
+                    if let recordings {
+                        Divider()
+                        SettingsRow("Recordings take \(recordings.formatted(.byteCount(style: .file)))") {
+                            Button("Show in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([recordingsFolder])
+                            }
+                        }
+                    }
+                }
             }
             .padding(20)
             }
@@ -325,6 +346,8 @@ struct SettingsView: View {
             udp = file.udp ?? effective?.udp ?? false
             muteMac = file.muteMac ?? effective?.muteMac ?? true
             fps = file.fps ?? effective?.fps ?? 30
+            record = file.h264Dump ?? false
+            recordings = Self.size(of: recordingsFolder)
             nla = (file.security ?? effective?.security ?? "tls") == "nla"
             initial = choices
         } catch {
@@ -332,8 +355,8 @@ struct SettingsView: View {
         }
     }
 
-    /// What saving restarts the server for: everything but the choice between AVC444 and AVC420
-    /// and the colour conversion, which reach the next connection without a restart.
+    /// What saving restarts the server for: everything but the choice between AVC444 and AVC420,
+    /// the colour conversion and the recording, which reach the next connection without a restart.
     private struct Choices: Equatable {
         var listen: String
         var followClient: Bool
@@ -374,6 +397,8 @@ struct SettingsView: View {
         settings.udp = udp
         settings.muteMac = muteMac
         settings.fps = fps
+        // Left out of the file when off, as it is by default.
+        settings.h264Dump = record ? true : nil
         settings.security = nla ? "nla" : "tls"
         do {
             try model.saveSettings(settings)
@@ -385,6 +410,30 @@ struct SettingsView: View {
 }
 
 extension SettingsView {
+    /// Where the server keeps the recorded streams.
+    private var recordingsFolder: URL {
+        URL(fileURLWithPath: model.status?.logDir ?? NSHomeDirectory() + "/Library/Logs/rdpmac", isDirectory: true)
+            .appendingPathComponent("h264", isDirectory: true)
+    }
+
+    /// The size of the files under `folder`, or nil when there are none.
+    private static func size(of folder: URL) -> Int64? {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+        guard let files = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: Array(keys), options: .skipsHiddenFiles
+        ) else {
+            return nil
+        }
+        var total: Int64 = 0
+        var any = false
+        for case let file as URL in files {
+            guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            total += Int64(values.fileSize ?? 0)
+            any = true
+        }
+        return any ? total : nil
+    }
+
     /// Clients prove the password before a session exists, against the NT hash the server keeps
     /// for the enrolled user; it is derived from the Mac password, so enroll again after changing it.
     @ViewBuilder

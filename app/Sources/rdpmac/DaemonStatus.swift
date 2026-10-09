@@ -111,7 +111,7 @@ struct DaemonSettings: Codable, Equatable {
     var cursorHz: Int?
     var cert: String?
     var key: String?
-    /// A diagnostic set by hand in the file; not shown, only kept when saving.
+    /// Recording the H.264 streams as sent, for debugging.
     var h264Dump: Bool?
 
     enum CodingKeys: String, CodingKey {

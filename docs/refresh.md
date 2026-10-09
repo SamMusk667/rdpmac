@@ -86,10 +86,15 @@ H.264 a second. Changed on 2026-09-26: capture now keeps to `fps` (30 by default
 
 ## Stream recording (`h264-dump`)
 
-Off by default. To turn it on, add the line `h264-dump = true` to
-`~/Library/Application Support/rdpmac/config.toml` and restart the server, or add `--h264-dump` to
-the command line. The app keeps this key when it saves the settings, but its settings window does
-not show it.
+Off by default. To turn it on, switch on "Record the picture stream" under Debugging in the app's
+settings, add the line `h264-dump = true` to `~/Library/Application Support/rdpmac/config.toml`, or
+add `--h264-dump` to the command line. Saving the settings needs no restart: recording starts with
+the next connection, and turning it off ends the current recording at once. Recordings already made
+stay on disk; the settings window shows how much they take and opens their folder in Finder. Turning
+the switch off removes the key from the file.
+
+Until 0.5.0 the settings window had no switch for it, so a `h264-dump = true` added by hand stayed
+on, through every save, until it was removed from the file by hand.
 
 - One directory per H.264 stream:
   `~/Library/Logs/rdpmac/h264/<UTC start time>-<width>x<height>-<avc444|avc420>/`. The log has

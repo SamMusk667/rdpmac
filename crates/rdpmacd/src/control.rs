@@ -200,6 +200,7 @@ impl Control {
             let options = crate::gfx_options(&args);
             info!(?options, "the next connection uses the saved codec settings");
             gfx.set_options(options);
+            gfx.record_to(args.h264_dump.then(|| self.log_dir.clone()));
         }
         self.effective.restart_needed(&Settings::effective(&args))
     }

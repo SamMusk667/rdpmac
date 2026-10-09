@@ -139,8 +139,9 @@ the server encodes it again with a finer quantiser, so text is close to lossless
 gets the quantiser its bitrate allows. Capture is limited by `--fps` (default 30): when the picture
 changes faster, frames in between are skipped, never the last one. While mstsc is minimised the
 picture pauses, with no capture and nothing sent; on restore, or when the client asks for a refresh,
-the whole picture goes out. `--h264-dump` records the H.264 stream exactly as sent, to find out why
-a client showed a corrupted picture (docs/refresh.md).
+the whole picture goes out. "Record the picture stream" under Debugging in the settings (or
+`--h264-dump`) records the H.264 stream exactly as sent, to find out why a client showed a corrupted
+picture; it is off by default (docs/refresh.md).
 
 Text, pictures and files on the clipboard are shared both ways by default (docs/clipboard.md);
 `--no-clipboard` turns that off. What the Mac plays goes to the client by default (16-bit stereo PCM

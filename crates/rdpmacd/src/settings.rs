@@ -194,12 +194,13 @@ impl Settings {
     }
 
     /// Whether going from these settings in effect to `new` needs a restart. The choice between
-    /// AVC444 and AVC420 and the colour conversion reach the next connection without one; whether
-    /// to use H.264 at all is decided when the server starts.
+    /// AVC444 and AVC420, the colour conversion and the stream recording reach the next connection
+    /// without one; whether to use H.264 at all is decided when the server starts.
     pub fn restart_needed(&self, new: &Self) -> bool {
         let rest = |s: &Self| Self {
             codec: None,
             parallel_conversion: None,
+            h264_dump: None,
             ..s.clone()
         };
         let h264 = |s: &Self| s.codec.unwrap_or(Codec::Auto) != Codec::Remotefx;
@@ -276,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_and_conversion_changes_need_no_restart() {
+    fn codec_conversion_and_recording_changes_need_no_restart() {
         let (args, _) = parse(&[]);
         let now = Settings::effective(&args);
         let with = |change: fn(&mut Settings)| {
@@ -286,13 +287,13 @@ mod tests {
         };
         assert!(!with(|s| s.codec = Some(Codec::Avc420)));
         assert!(!with(|s| s.parallel_conversion = Some(false)));
+        assert!(!with(|s| s.h264_dump = Some(true)));
         assert!(with(|s| s.codec = Some(Codec::Remotefx)), "H.264 is set up at start");
         assert!(with(|s| s.fps = Some(20)));
         assert!(with(|s| s.audio = Some(false)), "the sound channel is offered from the start");
         assert!(with(|s| s.drives = Some(false)), "the drive channel is offered from the start");
         assert!(with(|s| s.unlock = Some(false)), "logons are wired up at start");
         assert!(with(|s| s.udp = Some(true)), "the UDP offer is set up at start");
-        assert!(with(|s| s.h264_dump = Some(true)), "recording is set up at start");
         assert!(with(|s| s.mute_mac = Some(false)), "the sound channel takes it at start");
         assert!(with(|s| s.allow_users = Some(vec!["admin".into()])), "logons are checked from the start");
     }
